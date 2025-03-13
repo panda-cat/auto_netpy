@@ -1,0 +1,11 @@
+---
+ios_devices: # 群組名稱
+  members: # 群組成員列表
+    - ios_router1 # 主機名稱
+    - ios_router2
+    - ios_switch1
+
+junos_devices:
+  members:
+    - junos_router1
+    - junos_switch1
