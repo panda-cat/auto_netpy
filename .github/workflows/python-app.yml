@@ -1,0 +1,37 @@
+name: Nornir EXE Windows Build
+
+on:
+  push:
+    branches:
+      - main # 或您的主要分支名稱
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: windows-latest # 指定在 Windows 環境下運行
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9' # 或您使用的 Python 版本
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller nornir nornir-netmiko # 安裝 pyinstaller 和其他依賴項
+
+      - name: Compile to EXE
+        run: |
+          pyinstaller myapp.py --onefile --windowed --add-data "config.yaml;." --add-data "hosts.yaml;." --add-data "groups.yaml;." # 替换为你的脚本名称和参数
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: winapp
+          path: dist
