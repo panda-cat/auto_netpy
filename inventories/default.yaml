@@ -1,0 +1,14 @@
+cisco_group:
+  username: admin
+  password: Cisco@123
+  data:
+    secret: enable
+    readtime: 15
+
+palo_group:
+  username: admin
+  password: Palo@123
+  connection_options:
+    netmiko:
+      extras:
+        read_timeout_override: 30
