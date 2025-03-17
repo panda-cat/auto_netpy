@@ -1,11 +1,11 @@
----
-inventory:
-  plugin: SimpleInventory
-  options:
-    host_file: "hosts.yaml"
-    group_file: "groups.yaml"
-    defaults_file: "defaults.yaml"
 runner:
   plugin: threaded
   options:
-    num_workers: 10
+    num_workers: 20       # 最大并发数
+
+inventory:
+  plugin: YAMLInventory
+  options:
+    hosts_file: "inventories/hosts.yaml"
+    groups_file: "inventories/default.yaml"
+    defaults_file: "inventories/default.yaml"
