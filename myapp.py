@@ -1,68 +1,91 @@
-import os
 from nornir import InitNornir
-from nornir.plugins.tasks.networking import netmiko_send_command
-from nornir.plugins.functions.text import print_result
-import logging
+from nornir_netmiko import netmiko_send_command
+from nornir_utils.plugins.functions import print_result
+from datetime import datetime
+import os
+import openpyxl
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+def excel_to_nornir(excel_file: str) -> None:
+    """将Excel数据转换为Nornir清单"""
+    wb = openpyxl.load_workbook(excel_file)
+    sheet = wb.active
+    
+    # 生成hosts.yaml内容
+    hosts = {}
+    groups = {}
+    
+    for row in sheet.iter_rows(min_row=2, values_only=True):
+        host_data = {
+            "hostname": row[0],
+            "platform": row[3],
+            "groups": [f"{row[3]}_group"],
+            "data": {
+                "commands": row[6].split(";"),
+                "secret": row[4],
+                "readtime": row[5]
+            }
+        }
+        hosts[row[0]] = host_data
+        
+        # 创建设备组
+        group_name = f"{row[3]}_group"
+        groups.setdefault(group_name, {
+            "username": row[1],
+            "password": row[2],
+            "connection_options": {
+                "netmiko": {
+                    "extras": {
+                        "secret": row[4],
+                        "read_timeout_override": int(row[5])
+                    }
+                }
+            }
+        })
+    
+    # 生成YAML文件
+    with open("inventories/hosts.yaml", "w") as f:
+        f.write("---\n")
+        for host, data in hosts.items():
+            f.write(f"{host}:\n")
+            for k, v in data.items():
+                f.write(f"  {k}: {v}\n")
 
-def execute_device_commands(task):
-    """
-    针对每台设备执行其特定的多条命令，并处理错误。
-    """
-    commands = task.host.get("commands", [])
-    results = []
+def save_results(result, host) -> None:
+    """保存执行结果"""
+    date_str = datetime.now().strftime("%Y%m%d")
+    output_dir = f"results/result_{date_str}"
+    os.makedirs(output_dir, exist_ok=True)
+    
+    filename = f"{host.hostname}_{host.name}.txt"
+    with open(os.path.join(output_dir, filename), "w") as f:
+        for cmd_result in result:
+            f.write(f"=== Command: {cmd_result.command} ===\n")
+            f.write(cmd_result.result + "\n\n")
 
-    for command in commands:
-        result = task.run(task=netmiko_send_command, command_string=command, use_enable=True) #增加enable模式
+def main():
+    # 初始化Nornir
+    nr = InitNornir(config_file="config.yaml")
+    
+    # 执行任务
+    results = nr.run(
+        task=netmiko_send_command,
+        command_string=nr.config.inventory.hosts[
+            nr.current_host.name].data["commands"]
+    )
+    
+    # 处理结果
+    for host, result in results.items():
         if result.failed:
-            logging.error(f"Device {task.host.name}, command '{command}' failed: {result.result}")
-            results.append({"command": command, "status": "failed", "output": result.result})
+            with open("error_log.txt", "a") as f:
+                f.write(f"{datetime.now()} | {host} | {result.exception}\n")
         else:
-            logging.info(f"Device {task.host.name}, command '{command}' success")
-            results.append({"command": command, "status": "success", "output": result.result})
-
-    task.host["output"] = results
-
-def save_results(nr, output_folder):
-    """
-    保存每台设备的结果到指定的文件夹，并处理错误。
-    """
-    if not os.path.exists(output_folder):
-        os.makedirs(output_folder)
-        logging.info(f"创建文件夹: {output_folder}")
-
-    for host in nr.inventory.hosts.values():
-        file_path = os.path.join(output_folder, f"{host.name}.txt")
-        try:
-            with open(file_path, "w", encoding="utf-8") as file:
-                file.write(f"Device: {host.name}\n")
-                file.write("Execution Results:\n")
-                for result in host["output"]:
-                    file.write(f"Command: {result['command']}\n")
-                    file.write(f"Status: {result['status']}\n")
-                    file.write(f"Output: {result['output']}\n\n")
-            logging.info(f"结果已保存至: {file_path}")
-        except Exception as e:
-            logging.error(f"保存结果到 {file_path} 失败: {e}")
-
-def main(config_file, output_folder, group_name=None):#增加group_name参数
-    nr = InitNornir(config_file=config_file)
-    if group_name:
-        filtered_nr = nr.filter(group=group_name)
-    else:
-        filtered_nr = nr
-
-    results = filtered_nr.run(task=execute_device_commands)
+            save_results(result, host)
+    
     print_result(results)
-    save_results(filtered_nr, output_folder)
 
 if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="使用 Nornir 执行设备特定命令并保存结果")
-    parser.add_argument("--config", required=True, help="Nornir 配置文件路径")
-    parser.add_argument("--output", required=True, help="保存结果的文件夹路径")
-    parser.add_argument("--group", required=False, help="需要运行的组名")#增加group参数
-    args = parser.parse_args()
-    main(args.config, args.output, args.group)
+    # 转换Excel数据
+    excel_to_nornir("devices.xlsx")
+    
+    # 执行主程序
+    main()
