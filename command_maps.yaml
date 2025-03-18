@@ -1,0 +1,21 @@
+# 多平台命令映射
+cisco_ios:
+  get_config: 
+    - show running-config
+    - show version
+  health_check:
+    - show interfaces status
+    - show processes cpu
+
+huawei_vrp:
+  get_config: 
+    - display current-configuration
+    - display device
+  health_check:
+    - display interface brief
+    - display cpu-usage
+
+juniper_junos:
+  get_config: 
+    - show configuration | display set
+    - show system license
