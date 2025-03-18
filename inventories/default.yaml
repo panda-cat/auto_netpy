@@ -1,14 +1,10 @@
-cisco_group:
-  username: admin
-  password: Cisco@123
-  data:
-    secret: enable
-    readtime: 15
-
-palo_group:
-  username: admin
-  password: Palo@123
-  connection_options:
-    netmiko:
-      extras:
-        read_timeout_override: 30
+# 全局默认值
+username: netadmin
+password: Default@123
+port: 22
+connection_options:
+  netmiko:
+    extras:
+      secret: enable123
+      timeout: 30
+      read_timeout_override: 45
