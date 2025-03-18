@@ -14,7 +14,7 @@ from typing import Dict, List, Optional
 # --------------------------
 def load_command_map() -> Dict:
     """加载多平台命令映射"""
-    with open("command_maps.yaml") as f:
+    with open("command_maps.yaml", encoding='utf-8') as f:
         return yaml.safe_load(f)
 
 COMMAND_MAP = load_command_map()
