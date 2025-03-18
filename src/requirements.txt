@@ -1,0 +1,5 @@
+nornir==3.0.0
+nornir-netmiko==0.2.0
+pyyaml==6.0.1
+pyinstaller==5.13.2
+netmiko==4.2.0
