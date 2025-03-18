@@ -1,91 +1,155 @@
 from nornir import InitNornir
-from nornir_netmiko import netmiko_send_command
+from nornir.core.task import Task, Result
 from nornir_utils.plugins.functions import print_result
+from nornir_netmiko import netmiko_send_command
 from datetime import datetime
 import os
-import openpyxl
+import sys
+import argparse
+import yaml
+from typing import Dict, List, Optional
 
-def excel_to_nornir(excel_file: str) -> None:
-    """将Excel数据转换为Nornir清单"""
-    wb = openpyxl.load_workbook(excel_file)
-    sheet = wb.active
+# --------------------------
+# 配置管理模块
+# --------------------------
+def load_command_map() -> Dict:
+    """加载多平台命令映射"""
+    with open("command_maps.yaml") as f:
+        return yaml.safe_load(f)
+
+COMMAND_MAP = load_command_map()
+
+# --------------------------
+# 工具函数
+# --------------------------
+def sanitize_filename(name: str) -> str:
+    """生成安全文件名"""
+    invalid_chars = r'<>:"/\|?*'
+    return ''.join(c for c in name if c not in invalid_chars).strip()[:50]
+
+def get_platform_commands(host, command_type: str) -> List[str]:
+    """获取平台适配的命令列表"""
+    # 优先级: 设备级 > 组级 > 全局默认
+    platform = host.platform or 'default'
+    custom_cmds = host.get('custom_commands', {}).get(command_type)
     
-    # 生成hosts.yaml内容
-    hosts = {}
-    groups = {}
+    if custom_cmds:
+        return custom_cmds if isinstance(custom_cmds, list) else [custom_cmds]
     
-    for row in sheet.iter_rows(min_row=2, values_only=True):
-        host_data = {
-            "hostname": row[0],
-            "platform": row[3],
-            "groups": [f"{row[3]}_group"],
-            "data": {
-                "commands": row[6].split(";"),
-                "secret": row[4],
-                "readtime": row[5]
+    group_cmds = []
+    for group in host.groups:
+        if group.get('custom_commands', {}).get(command_type):
+            group_cmds.extend(group['custom_commands'][command_type])
+    if group_cmds:
+        return group_cmds
+    
+    return COMMAND_MAP.get(platform, {}).get(command_type, [])
+
+# --------------------------
+# 核心任务
+# --------------------------
+def execute_commands(task: Task, output_dir: str) -> Result:
+    """执行设备命令任务"""
+    host = task.host
+    try:
+        # 获取平台适配的命令
+        commands = get_platform_commands(host, 'get_config')
+        if not commands:
+            raise ValueError("未找到该平台的命令配置")
+        
+        # 执行命令
+        results = []
+        for cmd in commands:
+            result = task.run(
+                task=netmiko_send_command,
+                command_string=cmd,
+                enable=True if host.platform == 'cisco_ios' else False
+            )
+            results.append(result.result)
+        
+        # 保存结果
+        save_results(task, results, output_dir)
+        return Result(host=host, result=results, changed=False)
+    
+    except Exception as e:
+        log_error(host, str(e))
+        return Result(host=host, result=str(e), failed=True)
+
+def save_results(task: Task, results: List[str], output_dir: str):
+    """保存执行结果"""
+    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+    ip = task.host.hostname
+    platform = task.host.platform
+    
+    filename = f"{sanitize_filename(ip)}_{platform}_{timestamp}.txt"
+    content = f"=== 设备 {ip} ({platform}) 执行结果 ===\n\n"
+    
+    for i, (cmd, output) in enumerate(zip(
+        get_platform_commands(task.host, 'get_config'), 
+        results
+    )):
+        content += f"[命令 {i+1}]\n{cmd}\n\n[输出]\n{output}\n{'='*40}\n"
+    
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, filename), 'w') as f:
+        f.write(content)
+
+def log_error(host, error: str):
+    """记录错误日志"""
+    timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    log_entry = f"[{timestamp}] {host.hostname} ({host.platform}) - {error}\n"
+    
+    with open("operation_errors.log", 'a') as f:
+        f.write(log_entry)
+
+# --------------------------
+# 主程序
+# --------------------------
+def main(output_dir: Optional[str], workers: int):
+    # 初始化Nornir
+    nr = InitNornir(
+        runner={
+            "plugin": "threaded",
+            "options": {
+                "num_workers": workers,
+            }
+        },
+        inventory={
+            "plugin": "SimpleInventory",
+            "options": {
+                "host_file": "inventory/hosts.yaml",
+                "group_file": "inventory/groups.yaml",
+                "defaults_file": "inventory/defaults.yaml",
             }
         }
-        hosts[row[0]] = host_data
-        
-        # 创建设备组
-        group_name = f"{row[3]}_group"
-        groups.setdefault(group_name, {
-            "username": row[1],
-            "password": row[2],
-            "connection_options": {
-                "netmiko": {
-                    "extras": {
-                        "secret": row[4],
-                        "read_timeout_override": int(row[5])
-                    }
-                }
-            }
-        })
-    
-    # 生成YAML文件
-    with open("inventories/hosts.yaml", "w") as f:
-        f.write("---\n")
-        for host, data in hosts.items():
-            f.write(f"{host}:\n")
-            for k, v in data.items():
-                f.write(f"  {k}: {v}\n")
-
-def save_results(result, host) -> None:
-    """保存执行结果"""
-    date_str = datetime.now().strftime("%Y%m%d")
-    output_dir = f"results/result_{date_str}"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    filename = f"{host.hostname}_{host.name}.txt"
-    with open(os.path.join(output_dir, filename), "w") as f:
-        for cmd_result in result:
-            f.write(f"=== Command: {cmd_result.command} ===\n")
-            f.write(cmd_result.result + "\n\n")
-
-def main():
-    # 初始化Nornir
-    nr = InitNornir(config_file="config.yaml")
-    
-    # 执行任务
-    results = nr.run(
-        task=netmiko_send_command,
-        command_string=nr.config.inventory.hosts[
-            nr.current_host.name].data["commands"]
     )
     
-    # 处理结果
-    for host, result in results.items():
-        if result.failed:
-            with open("error_log.txt", "a") as f:
-                f.write(f"{datetime.now()} | {host} | {result.exception}\n")
-        else:
-            save_results(result, host)
+    # 设置输出目录
+    final_output = output_dir or f"results_{datetime.now().strftime('%Y%m%d')}"
     
-    print_result(results)
+    # 执行任务
+    result = nr.run(
+        task=execute_commands,
+        output_dir=final_output
+    )
+    
+    # 输出统计
+    success = len(result) - len(result.failed_hosts)
+    print(f"\n执行统计:")
+    print(f"  成功: {success} 台")
+    print(f"  失败: {len(result.failed_hosts)} 台")
+    print(f"结果目录: {os.path.abspath(final_output)}")
+    print(f"错误日志: operation_errors.log")
 
 if __name__ == "__main__":
-    # 转换Excel数据
-    excel_to_nornir("devices.xlsx")
+    parser = argparse.ArgumentParser(description="网络设备批量运维工具")
+    parser.add_argument("-o", "--output", 
+                       help="指定输出目录路径", 
+                       metavar="DIR")
+    parser.add_argument("-t", "--threads", 
+                       type=int, 
+                       default=4, 
+                       help="并发线程数 (默认: 4)")
+    args = parser.parse_args()
     
-    # 执行主程序
-    main()
+    main(output_dir=args.output, workers=args.threads)
