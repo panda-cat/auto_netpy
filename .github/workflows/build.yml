@@ -27,7 +27,7 @@ jobs:
         
     - name: Build EXE
       run: |
-        pyinstaller --noconfirm --clean --distpath dist --workpath build pyinstaller.spec
+        pyinstaller --distpath dist --onefile --console --name test.exe src/auto_netops.py
         Get-ChildItem -Path dist -Recurse
         
     - name: Upload artifact
