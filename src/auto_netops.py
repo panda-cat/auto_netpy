@@ -1,11 +1,11 @@
 import re
 import os
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Set
 import pandas as pd
 from datetime import datetime
 
 class NetworkConfigParser:
-    """网络设备配置解析器 - 全面支持各种接口类型"""
+    """网络设备配置解析器 - 增强Ruckus ICX支持"""
     
     def __init__(self):
         # 定义所有可能的接口类型和速率
@@ -15,29 +15,27 @@ class NetworkConfigParser:
             'GigabitEthernet': (['Gi', 'Gig', 'GigE', 'GE'], '1G'),
             'TwoGigabitEthernet': (['Two', 'TwoGig', 'Tw'], '2.5G'),
             'FiveGigabitEthernet': (['Fi', 'FiveGig', 'Fiv'], '5G'),
-            'TenGigabitEthernet': (['Te', 'Ten', 'TenGig', 'TenGigE', 'TGE', 'XGE'], '10G'),  # 添加XGE支持华为
+            'TenGigabitEthernet': (['Te', 'Ten', 'TenGig', 'TenGigE', 'TGE', 'XGE'], '10G'),
             'TwentyFiveGigE': (['Twe', 'TwentyFiveGig', 'TF'], '25G'),
             'FortyGigabitEthernet': (['Fo', 'For', 'FortyGig', 'FortyGigE', 'FGE'], '40G'),
             'FiftyGigE': (['Fif', 'FiftyGig'], '50G'),
             'HundredGigE': (['Hu', 'Hun', 'HundredGig', 'HundredGigE', 'HGE'], '100G'),
-            'TwoHundredGigE': (['TH', 'TwoHundredGig'], '200G'),
-            'FourHundredGigE': (['FH', 'FourHundredGig'], '400G'),
+            # Ruckus特殊格式
+            'ethernet': (['ethernet', 'e'], 'Variable'),  # Ruckus使用小写ethernet
+            'lag': (['lag'], 'LAG'),  # Ruckus LAG
+            've': (['ve'], 'Virtual'),  # Ruckus虚拟接口
+            'management': (['management'], 'OOB'),
             # 其他接口类型
             'Ethernet': (['Eth', 'Et'], 'Variable'),
             'Port-channel': (['Po', 'Port-Channel'], 'LAG'),
-            'Eth-Trunk': (['Eth-Trunk'], 'LAG'),  # 华为链路聚合
+            'Eth-Trunk': (['Eth-Trunk'], 'LAG'),
             'Vlan': (['Vl', 'Vlan'], 'SVI'),
-            'Vlanif': (['Vlanif'], 'SVI'),  # 华为VLAN接口
+            'Vlanif': (['Vlanif'], 'SVI'),
             'Loopback': (['Lo', 'Loop'], 'Virtual'),
-            'LoopBack': (['LoopBack'], 'Virtual'),  # 华为Loopback
+            'LoopBack': (['LoopBack'], 'Virtual'),
             'Tunnel': (['Tu', 'Tun'], 'Virtual'),
             'Serial': (['Se', 'Ser'], 'Serial'),
-            'Management': (['Mgmt', 'Ma', 'MEth'], 'OOB'),  # MEth为华为管理接口
-            'XGigabitEthernet': (['XGE', 'XGigE'], '10G'),  # 华为10G接口
-            '10GE': (['10GE'], '10G'),  # 华为10G接口另一种格式
-            '25GE': (['25GE'], '25G'),  # 华为25G接口
-            '40GE': (['40GE'], '40G'),  # 华为40G接口
-            '100GE': (['100GE'], '100G'),  # 华为100G接口
+            'Management': (['Mgmt', 'Ma', 'MEth'], 'OOB'),
         }
         
         # 构建接口匹配正则表达式
@@ -64,6 +62,13 @@ class NetworkConfigParser:
                 'version': r'Version\s+([^\s,]+)',
                 'model': r'H3C\s+(\S+)',
                 'hostname': r'sysname\s+(\S+)'
+            },
+            'Ruckus': {
+                'identifier': [r'Ruckus', r'FastIron', r'ICX', r'Current configuration:', r'ver \d+\.\d+\.\d+'],
+                'version': r'SW:\s+Version\s+([^\s]+)',
+                'model': r'ICX(\d+[A-Z]*)',
+                'hostname': r'hostname\s+["\']?([^"\']+)["\']?',
+                'stack_info': r'stack\s+unit\s+(\d+)'
             },
             'Arista': {
                 'identifier': [r'Arista', r'EOS'],
@@ -96,48 +101,38 @@ class NetworkConfigParser:
                 'vpc': r'vpc\s+(\d+)',
                 'ip_address': r'ip\s+address\s+([\d\.]+)\s+([\d\.]+)'
             },
-            'Huawei': {
-                'interface': r'interface\s+([\w\-/\:\.]+)',  # 华为接口格式更灵活
-                'access': r'port\s+link-type\s+access',
-                'trunk': r'port\s+link-type\s+trunk',
-                'hybrid': r'port\s+link-type\s+hybrid',
-                'access_vlan': r'port\s+default\s+vlan\s+(\d+)',
-                'trunk_vlan': r'port\s+trunk\s+allow-pass\s+vlan\s+([\d\s\-to]+)',  # 支持to关键字
-                'hybrid_tagged': r'port\s+hybrid\s+tagged\s+vlan\s+([\d\s\-to]+)',
-                'hybrid_untagged': r'port\s+hybrid\s+untagged\s+vlan\s+([\d\s\-to]+)',
-                'shutdown': r'^\s*shutdown\s*$',
-                'undo_shutdown': r'^\s*undo\s+shutdown\s*$',  # 华为使用undo shutdown启用端口
-                'description': r'description\s+(.+)',
-                'speed': r'negotiation\s+auto\s+speed\s+(\d+)',  # 华为速率配置
-                'eth_trunk': r'eth-trunk\s+(\d+)',
-                'ip_address': r'ip\s+address\s+([\d\.]+)\s+([\d\.]+)',
-                'qinq': r'port\s+vlan-stacking',  # QinQ配置
-                'pvid': r'port\s+trunk\s+pvid\s+vlan\s+(\d+)'  # Trunk PVID
+            'Ruckus': {
+                'interface': r'interface\s+(ethernet\s+[\d/]+|lag\s+\d+|ve\s+\d+|management\s+\d+)',
+                'shutdown': r'^\s*disable\s*$',
+                'enable': r'^\s*enable\s*$',
+                'description': r'port-name\s+["\']?([^"\']+)["\']?',
+                'speed': r'speed-duplex\s+(\d+)-',
+                'duplex': r'speed-duplex\s+\d+-(\w+)',
+                'lag_member': r'lag\s+(\w+)\s+id\s+(\d+)',
+                'ip_address': r'ip\s+address\s+([\d\.]+)(?:/(\d+)|\s+([\d\.]+))'
             },
-            'H3C': {
+            'Huawei': {
                 'interface': r'interface\s+([\w\-/\:\.]+)',
                 'access': r'port\s+link-type\s+access',
                 'trunk': r'port\s+link-type\s+trunk',
                 'hybrid': r'port\s+link-type\s+hybrid',
-                'access_vlan': r'port\s+access\s+vlan\s+(\d+)',
-                'trunk_vlan': r'port\s+trunk\s+permit\s+vlan\s+([\d\s\-to]+)',
+                'access_vlan': r'port\s+default\s+vlan\s+(\d+)',
+                'trunk_vlan': r'port\s+trunk\s+allow-pass\s+vlan\s+([\d\s\-to]+)',
+                'hybrid_tagged': r'port\s+hybrid\s+tagged\s+vlan\s+([\d\s\-to]+)',
+                'hybrid_untagged': r'port\s+hybrid\s+untagged\s+vlan\s+([\d\s\-to]+)',
                 'shutdown': r'^\s*shutdown\s*$',
+                'undo_shutdown': r'^\s*undo\s+shutdown\s*$',
                 'description': r'description\s+(.+)',
-                'speed': r'speed\s+(\d+)',
-                'bridge_aggregation': r'port\s+link-aggregation\s+group\s+(\d+)'
-            },
-            'Arista': {
-                'interface': self.interface_regex,
-                'access': r'switchport\s+mode\s+access',
-                'trunk': r'switchport\s+mode\s+trunk',
-                'routed': r'no\s+switchport',
-                'access_vlan': r'switchport\s+access\s+vlan\s+(\d+)',
-                'trunk_vlan': r'switchport\s+trunk\s+allowed\s+vlan\s+([\d,\-\s]+)',
-                'shutdown': r'^\s*shutdown\s*$',
-                'description': r'description\s+(.+)',
-                'mlag': r'mlag\s+(\d+)'
+                'speed': r'negotiation\s+auto\s+speed\s+(\d+)',
+                'eth_trunk': r'eth-trunk\s+(\d+)',
+                'ip_address': r'ip\s+address\s+([\d\.]+)\s+([\d\.]+)',
+                'qinq': r'port\s+vlan-stacking',
+                'pvid': r'port\s+trunk\s+pvid\s+vlan\s+(\d+)'
             }
         }
+        
+        # Ruckus VLAN配置缓存
+        self.ruckus_vlan_cache = {}
     
     def _build_interface_regex(self):
         """构建匹配所有接口类型的正则表达式"""
@@ -147,16 +142,398 @@ class NetworkConfigParser:
             interface_names.append(full_name)
             interface_names.extend(abbreviations)
         
-        # 对华为设备特殊处理，支持无空格的接口名
-        # 例如：GigabitEthernet0/0/1 或 GE0/0/1
+        # 构建正则表达式
         interface_pattern = r'interface\s+(' + '|'.join(interface_names) + r')[\s\-]*([\d/:\.]+)'
         self.interface_regex = interface_pattern
     
-    def normalize_interface_name(self, interface: str) -> Tuple[str, str]:
+    def parse_ruckus_vlan_config(self, content: str) -> Dict[int, Dict[str, List[str]]]:
+        """解析Ruckus的VLAN配置块"""
+        vlan_configs = {}
+        current_vlan = None
+        in_vlan_block = False
+        
+        # Ruckus VLAN配置模式
+        vlan_pattern = r'vlan\s+(\d+)(?:\s+name\s+["\']?([^"\']+)["\']?)?'
+        tagged_pattern = r'^\s*tagged\s+(.+)'
+        untagged_pattern = r'^\s*untagged\s+(.+)'
+        router_interface_pattern = r'^\s*router-interface\s+ve\s+(\d+)'
+        spanning_tree_pattern = r'^\s*spanning-tree'
+        
+        lines = content.split('\n')
+        
+        for line in lines:
+            line = line.rstrip()
+            
+            # 检测VLAN配置块开始
+            if match := re.match(vlan_pattern, line):
+                current_vlan = int(match.group(1))
+                vlan_name = match.group(2) if match.group(2) else ''
+                vlan_configs[current_vlan] = {
+                    'name': vlan_name,
+                    'tagged': [],
+                    'untagged': [],
+                    've': None
+                }
+                in_vlan_block = True
+                continue
+            
+            # 检测是否退出VLAN配置块
+            if in_vlan_block and line and not line.startswith((' ', '\t')) and not line.startswith('!'):
+                if not re.match(r'^\s*(tagged|untagged|router-interface|spanning-tree)', line):
+                    in_vlan_block = False
+                    current_vlan = None
+            
+            # 在VLAN配置块内解析
+            if current_vlan and in_vlan_block:
+                # 解析tagged端口
+                if match := re.match(tagged_pattern, line):
+                    ports = self._parse_ruckus_port_list(match.group(1))
+                    vlan_configs[current_vlan]['tagged'].extend(ports)
+                
+                # 解析untagged端口
+                elif match := re.match(untagged_pattern, line):
+                    ports = self._parse_ruckus_port_list(match.group(1))
+                    vlan_configs[current_vlan]['untagged'].extend(ports)
+                
+                # 解析路由接口
+                elif match := re.match(router_interface_pattern, line):
+                    vlan_configs[current_vlan]['ve'] = f"ve {match.group(1)}"
+        
+        return vlan_configs
+    
+    def _parse_ruckus_port_list(self, port_str: str) -> List[str]:
+        """解析Ruckus端口列表"""
+        ports = []
+        
+        # 处理ethernet端口范围
+        # 格式: ethernet 1/1/1 to 1/1/24 ethernet 2/1/1
+        port_str = port_str.strip()
+        
+        # 先处理简单的逗号分隔
+        if ',' in port_str and 'to' not in port_str:
+            for port in port_str.split(','):
+                port = port.strip()
+                if port.startswith('ethernet'):
+                    ports.append(port)
+                elif port.startswith('lag'):
+                    ports.append(port)
+            return ports
+        
+        # 处理包含to的范围
+        parts = re.split(r'\s+', port_str)
+        i = 0
+        
+        while i < len(parts):
+            if parts[i] == 'ethernet' and i + 1 < len(parts):
+                # 检查是否有范围
+                if i + 3 < len(parts) and parts[i + 2] == 'to':
+                    # ethernet 1/1/1 to 1/1/24 格式
+                    start_port = f"ethernet {parts[i + 1]}"
+                    end_port_num = parts[i + 3]
+                    
+                    # 解析端口范围
+                    start_parts = parts[i + 1].split('/')
+                    end_parts = end_port_num.split('/')
+                    
+                    if len(start_parts) == 3 and len(end_parts) == 3:
+                        # 标准格式 stack/module/port
+                        for port_num in range(int(start_parts[2]), int(end_parts[2]) + 1):
+                            port = f"ethernet {start_parts[0]}/{start_parts[1]}/{port_num}"
+                            ports.append(port)
+                    elif len(end_parts) == 1:
+                        # 简化格式，只有端口号 ethernet 1/1/1 to 24
+                        for port_num in range(int(start_parts[2]), int(end_parts[0]) + 1):
+                            port = f"ethernet {start_parts[0]}/{start_parts[1]}/{port_num}"
+                            ports.append(port)
+                    
+                    # 查找下一个ethernet或结束
+                    i += 4
+                    while i < len(parts) and parts[i] != 'ethernet' and parts[i] != 'lag':
+                        i += 1
+                else:
+                    # 单个端口
+                    ports.append(f"ethernet {parts[i + 1]}")
+                    i += 2
+            elif parts[i] == 'lag' and i + 1 < len(parts):
+                ports.append(f"lag {parts[i + 1]}")
+                i += 2
+            else:
+                i += 1
+        
+        return ports
+    
+    def parse_interfaces(self, content: str, vendor: str) -> List[Dict]:
+        """解析接口配置 - 支持所有接口类型"""
+        interfaces = []
+        
+        if vendor not in self.interface_patterns:
+            return interfaces
+        
+        patterns = self.interface_patterns[vendor]
+        
+        # 对于Ruckus，先解析VLAN配置
+        if vendor == 'Ruckus':
+            self.ruckus_vlan_cache = self.parse_ruckus_vlan_config(content)
+        
+        # 使用更灵活的正则表达式来匹配接口
+        interface_pattern = re.compile(patterns['interface'], re.MULTILINE | re.IGNORECASE)
+        
+        # 找到所有接口配置的起始位置
+        interface_matches = list(interface_pattern.finditer(content))
+        
+        for i, match in enumerate(interface_matches):
+            # 获取原始接口名称
+            raw_interface = match.group(0).replace('interface', '').strip()
+            
+            # 标准化接口名称并获取速率
+            interface_name, interface_speed = self.normalize_interface_name(raw_interface, vendor)
+            
+            # 获取该接口的配置内容
+            start_pos = match.end()
+            if i + 1 < len(interface_matches):
+                end_pos = interface_matches[i + 1].start()
+            else:
+                # 最后一个接口
+                next_section = re.search(r'\n(?:!|vlan\s+\d+|interface)', content[start_pos:])
+                end_pos = start_pos + next_section.start() if next_section else len(content)
+            
+            interface_config = content[start_pos:end_pos]
+            
+            # 解析接口信息
+            interface_info = self.parse_interface_number(interface_name)
+            
+            if vendor == 'Ruckus':
+                # Ruckus特殊处理
+                interface_data = self._parse_ruckus_interface(
+                    interface_name, interface_speed, interface_config, interface_info
+                )
+            else:
+                # 其他厂商的处理逻辑
+                interface_data = self._parse_standard_interface(
+                    interface_name, interface_speed, interface_config, 
+                    interface_info, patterns, vendor
+                )
+            
+            interfaces.append(interface_data)
+        
+        return interfaces
+    
+    def _parse_ruckus_interface(self, interface_name: str, interface_speed: str, 
+                              interface_config: str, interface_info: Dict) -> Dict:
+        """解析Ruckus接口配置"""
+        patterns = self.interface_patterns['Ruckus']
+        
+        # 判断接口状态
+        if re.search(patterns.get('disable', r'disable'), interface_config):
+            status = 'Admin Down'
+        else:
+            status = 'Up'
+        
+        # 提取描述（port-name）
+        description = ''
+        desc_match = re.search(patterns.get('description'), interface_config)
+        if desc_match:
+            description = desc_match.group(1).strip()
+        
+        # 判断接口类型和VLAN信息
+        port_mode = 'Unknown'
+        vlan_info = ''
+        
+        # 查找该接口属于哪些VLAN
+        interface_vlans = {'tagged': [], 'untagged': []}
+        
+        for vlan_id, vlan_config in self.ruckus_vlan_cache.items():
+            if interface_name in vlan_config['tagged']:
+                interface_vlans['tagged'].append(vlan_id)
+            if interface_name in vlan_config['untagged']:
+                interface_vlans['untagged'].append(vlan_id)
+        
+        # 判断端口模式
+        if interface_name.startswith('ve'):
+            port_mode = 'Routed'
+            # 查找IP地址
+            ip_match = re.search(patterns.get('ip_address'), interface_config)
+            if ip_match:
+                ip = ip_match.group(1)
+                if ip_match.group(2):  # CIDR格式
+                    mask_bits = ip_match.group(2)
+                    vlan_info = f"IP: {ip}/{mask_bits}"
+                elif ip_match.group(3):  # 传统格式
+                    mask = ip_match.group(3)
+                    vlan_info = f"IP: {ip} {mask}"
+        elif interface_vlans['untagged'] and not interface_vlans['tagged']:
+            # 只有untagged VLAN - Access端口
+            port_mode = 'Access'
+            vlan_info = f"VLAN {interface_vlans['untagged'][0]}"
+        elif interface_vlans['tagged']:
+            # 有tagged VLAN - Trunk端口
+            port_mode = 'Trunk'
+            vlans_str = ','.join(map(str, sorted(interface_vlans['tagged'])))
+            if interface_vlans['untagged']:
+                vlans_str += f" (Native: {interface_vlans['untagged'][0]})"
+            vlan_info = f"VLANs: {vlans_str}"
+        elif interface_name.startswith('lag'):
+            # LAG接口
+            port_mode = 'LAG'
+            if interface_vlans['tagged'] or interface_vlans['untagged']:
+                vlans_str = ','.join(map(str, sorted(interface_vlans['tagged'])))
+                if interface_vlans['untagged']:
+                    vlans_str += f" (Native: {interface_vlans['untagged'][0]})"
+                vlan_info = f"VLANs: {vlans_str}"
+        
+        # 提取速率和双工设置
+        configured_speed = ''
+        duplex = ''
+        speed_duplex_match = re.search(r'speed-duplex\s+(\d+)-(\w+)', interface_config)
+        if speed_duplex_match:
+            configured_speed = f"{speed_duplex_match.group(1)}M"
+            duplex = speed_duplex_match.group(2)
+        
+        # 额外信息
+        extra_info = {}
+        
+        # LAG成员信息
+        lag_match = re.search(patterns.get('lag_member'), interface_config)
+        if lag_match:
+            lag_type = lag_match.group(1)  # dynamic或static
+            lag_id = lag_match.group(2)
+            extra_info['lag_member'] = f"LAG {lag_id} ({lag_type})"
+        
+        # 堆叠成员信息（从接口名提取）
+        if interface_info.get('format') == 'ruckus_stack':
+            extra_info['stack_member'] = f"Unit-{interface_info['stack_unit']}"
+        
+        interface_data = {
+            'interface': interface_name,
+            'interface_speed': interface_speed,
+            'port_mode': port_mode,
+            'vlan_info': vlan_info,
+            'status': status,
+            'description': description,
+            'configured_speed': configured_speed,
+            'duplex': duplex,
+            'interface_format': interface_info.get('format', 'unknown')
+        }
+        
+        # 添加额外信息
+        interface_data.update(extra_info)
+        
+        return interface_data
+    
+    def _parse_standard_interface(self, interface_name: str, interface_speed: str,
+                                interface_config: str, interface_info: Dict,
+                                patterns: Dict, vendor: str) -> Dict:
+        """解析标准接口配置（非Ruckus）"""
+        # 判断接口类型
+        port_mode = 'Unknown'
+        vlan_info = ''
+        
+        # 华为特殊处理
+        if vendor == 'Huawei':
+            # 检查是否是undo shutdown（端口启用）
+            if re.search(patterns.get('undo_shutdown', ''), interface_config):
+                status = 'Up'
+            elif re.search(patterns.get('shutdown', ''), interface_config):
+                status = 'Admin Down'
+            else:
+                status = 'Up'  # 华为默认端口是启用的
+        else:
+            # 判断接口状态（非华为设备）
+            shutdown = bool(re.search(patterns.get('shutdown', r'shutdown'), interface_config, re.MULTILINE))
+            status = 'Admin Down' if shutdown else 'Up'
+        
+        # 检查是否是路由接口
+        if 'routed' in patterns and re.search(patterns['routed'], interface_config):
+            port_mode = 'Routed'
+            ip_match = re.search(patterns.get('ip_address'), interface_config)
+            if ip_match:
+                vlan_info = f"IP: {ip_match.group(1)}/{ip_match.group(2)}"
+        elif re.search(patterns.get('access', ''), interface_config):
+            port_mode = 'Access'
+            vlan_match = re.search(patterns.get('access_vlan', ''), interface_config)
+            if vlan_match:
+                vlan_info = f"VLAN {vlan_match.group(1)}"
+        elif re.search(patterns.get('trunk', ''), interface_config):
+            port_mode = 'Trunk'
+            vlan_match = re.search(patterns.get('trunk_vlan', ''), interface_config)
+            if vlan_match:
+                vlans = vlan_match.group(1).strip()
+                if vendor == 'Huawei':
+                    vlans = self.parse_vlan_list_huawei(vlans)
+                vlan_info = f"VLANs: {vlans}"
+        elif 'hybrid' in patterns and re.search(patterns['hybrid'], interface_config):
+            port_mode = 'Hybrid'
+            vlan_info = 'Hybrid mode'
+        
+        # 提取描述
+        description = ''
+        desc_match = re.search(patterns.get('description', r'description\s+(.+)'), interface_config)
+        if desc_match:
+            description = desc_match.group(1).strip()
+        
+        # 提取速率设置
+        configured_speed = ''
+        speed_match = re.search(patterns.get('speed', r'speed\s+(\d+)'), interface_config)
+        if speed_match:
+            configured_speed = f"{speed_match.group(1)}M"
+        
+        # 提取双工设置
+        duplex = ''
+        duplex_match = re.search(patterns.get('duplex', r'duplex\s+(\w+)'), interface_config)
+        if duplex_match:
+            duplex = duplex_match.group(1)
+        
+        # 额外信息
+        extra_info = {}
+        
+        # 端口聚合信息
+        if vendor == 'Cisco':
+            channel_match = re.search(patterns.get('channel_group', ''), interface_config)
+            if channel_match:
+                extra_info['channel_group'] = f"Po{channel_match.group(1)}"
+        elif vendor == 'Huawei':
+            eth_trunk_match = re.search(patterns.get('eth_trunk', ''), interface_config)
+            if eth_trunk_match:
+                extra_info['eth_trunk'] = f"Eth-Trunk{eth_trunk_match.group(1)}"
+        
+        interface_data = {
+            'interface': interface_name,
+            'interface_speed': interface_speed,
+            'port_mode': port_mode,
+            'vlan_info': vlan_info,
+            'status': status,
+            'description': description,
+            'configured_speed': configured_speed,
+            'duplex': duplex,
+            'interface_format': interface_info.get('format', 'unknown')
+        }
+        
+        # 添加额外信息
+        interface_data.update(extra_info)
+        
+        return interface_data
+    
+    def normalize_interface_name(self, interface: str, vendor: str = None) -> Tuple[str, str]:
         """
         标准化接口名称并识别速率
         返回: (标准化名称, 速率)
         """
+        # Ruckus特殊处理
+        if vendor == 'Ruckus' and interface.lower().startswith('ethernet'):
+            # Ruckus使用小写ethernet，保持原样
+            parts = interface.split()
+            if len(parts) >= 2:
+                # 根据端口号判断速率
+                port_info = parts[1].split('/')
+                if len(port_info) >= 3:
+                    port_num = int(port_info[2])
+                    # 通常1-48是1G，49-56是10G（根据型号可能不同）
+                    if port_num <= 48:
+                        return interface, '1G'
+                    else:
+                        return interface, '10G'
+            return interface, 'Variable'
+        
         # 移除多余的空格
         interface = re.sub(r'\s+', '', interface)
         
@@ -182,216 +559,32 @@ class NetworkConfigParser:
         # 未找到匹配，返回原始名称
         return interface, 'Unknown'
     
-    def parse_vlan_list_huawei(self, vlan_str: str) -> str:
-        """解析华为的VLAN列表，将to转换为标准格式"""
-        # 将 "1 to 10" 转换为 "1-10"
-        vlan_str = re.sub(r'(\d+)\s+to\s+(\d+)', r'\1-\2', vlan_str)
-        return vlan_str.strip()
-    
-    def parse_interfaces(self, content: str, vendor: str) -> List[Dict]:
-        """解析接口配置 - 支持所有接口类型"""
-        interfaces = []
-        
-        if vendor not in self.interface_patterns:
-            return interfaces
-        
-        patterns = self.interface_patterns[vendor]
-        
-        # 使用更灵活的正则表达式来匹配接口
-        interface_pattern = re.compile(patterns['interface'], re.MULTILINE | re.IGNORECASE)
-        
-        # 找到所有接口配置的起始位置
-        interface_matches = list(interface_pattern.finditer(content))
-        
-        for i, match in enumerate(interface_matches):
-            # 获取原始接口名称
-            raw_interface = match.group(0).replace('interface', '').strip()
-            
-            # 标准化接口名称并获取速率
-            interface_name, interface_speed = self.normalize_interface_name(raw_interface)
-            
-            # 获取该接口的配置内容
-            start_pos = match.end()
-            if i + 1 < len(interface_matches):
-                end_pos = interface_matches[i + 1].start()
-            else:
-                # 最后一个接口，查找到下一个!或#或文件结尾
-                next_section = re.search(r'\n[!#]', content[start_pos:])
-                end_pos = start_pos + next_section.start() if next_section else len(content)
-            
-            interface_config = content[start_pos:end_pos]
-            
-            # 解析接口信息
-            interface_info = self.parse_interface_number(interface_name)
-            
-            # 判断接口类型
-            port_mode = 'Unknown'
-            vlan_info = ''
-            
-            # 华为特殊处理
-            if vendor == 'Huawei':
-                # 检查是否是undo shutdown（端口启用）
-                if re.search(patterns.get('undo_shutdown', ''), interface_config):
-                    status = 'Up'
-                elif re.search(patterns.get('shutdown', ''), interface_config):
-                    status = 'Admin Down'
-                else:
-                    status = 'Up'  # 华为默认端口是启用的
-                
-                # 检查端口类型
-                if re.search(patterns['access'], interface_config):
-                    port_mode = 'Access'
-                    vlan_match = re.search(patterns['access_vlan'], interface_config)
-                    if vlan_match:
-                        vlan_info = f"VLAN {vlan_match.group(1)}"
-                elif re.search(patterns['trunk'], interface_config):
-                    port_mode = 'Trunk'
-                    vlan_match = re.search(patterns['trunk_vlan'], interface_config)
-                    if vlan_match:
-                        vlans = self.parse_vlan_list_huawei(vlan_match.group(1))
-                        vlan_info = f"VLANs: {vlans}"
-                    # 检查PVID
-                    pvid_match = re.search(patterns.get('pvid', ''), interface_config)
-                    if pvid_match:
-                        vlan_info += f" (PVID: {pvid_match.group(1)})"
-                elif re.search(patterns.get('hybrid', ''), interface_config):
-                    port_mode = 'Hybrid'
-                    tagged_vlans = []
-                    untagged_vlans = []
-                    
-                    # 获取tagged VLANs
-                    tagged_match = re.search(patterns.get('hybrid_tagged', ''), interface_config)
-                    if tagged_match:
-                        tagged_vlans = self.parse_vlan_list_huawei(tagged_match.group(1))
-                    
-                    # 获取untagged VLANs
-                    untagged_match = re.search(patterns.get('hybrid_untagged', ''), interface_config)
-                    if untagged_match:
-                        untagged_vlans = self.parse_vlan_list_huawei(untagged_match.group(1))
-                    
-                    vlan_info = f"Tagged: {tagged_vlans}, Untagged: {untagged_vlans}"
-                
-                # 检查是否是三层接口
-                ip_match = re.search(patterns.get('ip_address', ''), interface_config)
-                if ip_match:
-                    port_mode = 'Routed'
-                    vlan_info = f"IP: {ip_match.group(1)}/{ip_match.group(2)}"
-            else:
-                # 其他厂商的处理逻辑
-                # 检查是否是路由接口
-                if 'routed' in patterns and re.search(patterns['routed'], interface_config):
-                    port_mode = 'Routed'
-                    # 查找IP地址
-                    ip_match = re.search(patterns.get('ip_address', r'ip\s+address\s+([\d\.]+)\s+([\d\.]+)'), interface_config)
-                    if ip_match:
-                        vlan_info = f"IP: {ip_match.group(1)}/{ip_match.group(2)}"
-                elif re.search(patterns['access'], interface_config):
-                    port_mode = 'Access'
-                    vlan_match = re.search(patterns['access_vlan'], interface_config)
-                    if vlan_match:
-                        vlan_info = f"VLAN {vlan_match.group(1)}"
-                elif re.search(patterns['trunk'], interface_config):
-                    port_mode = 'Trunk'
-                    vlan_match = re.search(patterns['trunk_vlan'], interface_config)
-                    if vlan_match:
-                        vlans = vlan_match.group(1).strip()
-                        vlan_info = f"VLANs: {vlans}"
-                elif 'hybrid' in patterns and re.search(patterns['hybrid'], interface_config):
-                    port_mode = 'Hybrid'
-                    vlan_info = 'Hybrid mode'
-                
-                # 判断接口状态（非华为设备）
-                shutdown = bool(re.search(patterns.get('shutdown', r'shutdown'), interface_config, re.MULTILINE))
-                status = 'Admin Down' if shutdown else 'Up'
-            
-            # 提取描述
-            description = ''
-            desc_match = re.search(patterns.get('description', r'description\s+(.+)'), interface_config)
-            if desc_match:
-                description = desc_match.group(1).strip()
-            
-            # 提取速率设置
-            configured_speed = ''
-            speed_match = re.search(patterns.get('speed', r'speed\s+(\d+)'), interface_config)
-            if speed_match:
-                configured_speed = f"{speed_match.group(1)}M"
-            
-            # 提取双工设置
-            duplex = ''
-            duplex_match = re.search(patterns.get('duplex', r'duplex\s+(\w+)'), interface_config)
-            if duplex_match:
-                duplex = duplex_match.group(1)
-            
-            # 额外信息
-            extra_info = {}
-            
-            # 端口聚合信息
-            if vendor == 'Cisco':
-                channel_match = re.search(patterns.get('channel_group', ''), interface_config)
-                if channel_match:
-                    extra_info['channel_group'] = f"Po{channel_match.group(1)}"
-                
-                vpc_match = re.search(patterns.get('vpc', ''), interface_config)
-                if vpc_match:
-                    extra_info['vpc'] = f"vPC {vpc_match.group(1)}"
-            
-            elif vendor == 'Huawei':
-                eth_trunk_match = re.search(patterns.get('eth_trunk', ''), interface_config)
-                if eth_trunk_match:
-                    extra_info['eth_trunk'] = f"Eth-Trunk{eth_trunk_match.group(1)}"
-                
-                # QinQ检测
-                if re.search(patterns.get('qinq', ''), interface_config):
-                    extra_info['qinq'] = 'Enabled'
-            
-            elif vendor == 'H3C':
-                bridge_agg_match = re.search(patterns.get('bridge_aggregation', ''), interface_config)
-                if bridge_agg_match:
-                    extra_info['bridge_aggregation'] = f"BAGG{bridge_agg_match.group(1)}"
-            
-            elif vendor == 'Arista':
-                mlag_match = re.search(patterns.get('mlag', ''), interface_config)
-                if mlag_match:
-                    extra_info['mlag'] = f"MLAG {mlag_match.group(1)}"
-            
-            # 堆叠成员信息（针对9000系列）
-            if interface_info.get('format') == '9k_stack':
-                extra_info['stack_member'] = f"Switch-{interface_info['switch']}"
-            
-            interface_data = {
-                'interface': interface_name,
-                'interface_speed': interface_speed,
-                'port_mode': port_mode,
-                'vlan_info': vlan_info,
-                'status': status,
-                'description': description,
-                'configured_speed': configured_speed,
-                'duplex': duplex,
-                'interface_format': interface_info.get('format', 'unknown')
-            }
-            
-            # 添加额外信息
-            interface_data.update(extra_info)
-            
-            interfaces.append(interface_data)
-        
-        return interfaces
-    
     def parse_interface_number(self, interface: str) -> Dict:
         """解析接口编号，支持各种格式"""
         # 提取接口类型和编号
-        match = re.match(r'([A-Za-z\-]+)([\d/:\.]+.*)', interface)
+        match = re.match(r'([A-Za-z\-\s]+?)\s*([\d/:\.]+.*)', interface)
         if not match:
             return {'type': 'Unknown', 'numbers': [], 'format': 'unknown'}
         
-        interface_type = match.group(1)
+        interface_type = match.group(1).strip()
         numbers_str = match.group(2)
         
         # 解析不同的编号格式
-        # 支持: 0/1, 1/0/1, 1/1/0/1, 1:1, 1.1等
         if '/' in numbers_str:
             numbers = numbers_str.strip('/').split('/')
-            if len(numbers) == 4:
+            
+            # Ruckus格式检测
+            if interface_type.lower() == 'ethernet' and len(numbers) == 3:
+                # Ruckus格式: stack/module/port
+                return {
+                    'type': interface_type,
+                    'format': 'ruckus_stack',
+                    'stack_unit': numbers[0],
+                    'module': numbers[1],
+                    'port': numbers[2],
+                    'numbers': numbers
+                }
+            elif len(numbers) == 4:
                 # 9000系列堆叠格式: switch/module/slot/port
                 return {
                     'type': interface_type,
@@ -442,23 +635,32 @@ class NetworkConfigParser:
                 'numbers': [base_intf, sub_intf]
             }
         else:
-            # 简单格式: Ethernet1
+            # 简单格式: Ethernet1, ve1, lag 1
             return {
                 'type': interface_type,
                 'format': 'simple',
                 'port': numbers_str,
                 'numbers': [numbers_str]
             }
-        
-        return {'type': interface_type, 'format': 'unknown', 'numbers': [numbers_str]}
+    
+    def parse_vlan_list_huawei(self, vlan_str: str) -> str:
+        """解析华为的VLAN列表，将to转换为标准格式"""
+        vlan_str = re.sub(r'(\d+)\s+to\s+(\d+)', r'\1-\2', vlan_str)
+        return vlan_str.strip()
     
     def detect_vendor(self, content: str) -> str:
         """检测设备厂商"""
         content_lower = content.lower()
-        for vendor, patterns in self.vendor_patterns.items():
+        
+        # 按优先级检测
+        vendor_priority = ['Ruckus', 'Huawei', 'H3C', 'Cisco', 'Arista', 'Juniper']
+        
+        for vendor in vendor_priority:
+            patterns = self.vendor_patterns[vendor]
             for identifier in patterns['identifier']:
                 if re.search(identifier.lower(), content_lower):
                     return vendor
+        
         return 'Unknown'
     
     def extract_device_info(self, content: str, vendor: str) -> Dict:
@@ -490,20 +692,15 @@ class NetworkConfigParser:
                 info['hostname'] = hostname_match.group(1)
             
             # 特定厂商的设备类型检测
-            if vendor == 'Cisco':
-                if any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns.get('is_9k', [])):
-                    info['device_type'] = 'Catalyst 9000 Series'
-                elif any(re.search(pattern, content, re.IGNORECASE) for pattern in patterns.get('is_nexus', [])):
-                    info['device_type'] = 'Nexus Series'
-                else:
-                    info['device_type'] = 'Traditional IOS'
-            elif vendor == 'Huawei':
-                if 'CE' in info['model']:
-                    info['device_type'] = 'CloudEngine Series'
-                elif 'S' in info['model']:
-                    info['device_type'] = 'S Series Switch'
-                elif 'AR' in info['model']:
-                    info['device_type'] = 'AR Series Router'
+            if vendor == 'Ruckus':
+                if 'ICX' in info['model']:
+                    info['device_type'] = f"ICX {info['model']} Series"
+                
+                # 检测堆叠信息
+                stack_matches = re.findall(patterns.get('stack_info', ''), content)
+                if stack_matches:
+                    info['stack_units'] = list(set(stack_matches))
+                    info['device_type'] += f" (Stack: {len(info['stack_units'])} units)"
         
         return info
     
@@ -530,7 +727,7 @@ class NetworkConfigParser:
         access_ports = sum(1 for i in interfaces if i['port_mode'] == 'Access')
         trunk_ports = sum(1 for i in interfaces if i['port_mode'] == 'Trunk')
         routed_ports = sum(1 for i in interfaces if i['port_mode'] == 'Routed')
-        hybrid_ports = sum(1 for i in interfaces if i['port_mode'] == 'Hybrid')
+        lag_ports = sum(1 for i in interfaces if i['port_mode'] == 'LAG')
         
         # 按速率统计
         speed_stats = {}
@@ -540,7 +737,10 @@ class NetworkConfigParser:
         
         # 堆叠信息
         stack_info = {}
-        if device_info.get('device_type') == 'Catalyst 9000 Series':
+        if vendor == 'Ruckus' and 'stack_units' in device_info:
+            stack_info['stack_members'] = len(device_info['stack_units'])
+            stack_info['stack_member_list'] = device_info['stack_units']
+        elif device_info.get('device_type') == 'Catalyst 9000 Series':
             stack_members = set()
             for intf in interfaces:
                 if 'stack_member' in intf:
@@ -556,8 +756,8 @@ class NetworkConfigParser:
                 'access_ports': access_ports,
                 'trunk_ports': trunk_ports,
                 'routed_ports': routed_ports,
-                'hybrid_ports': hybrid_ports,
-                'unknown_ports': total_ports - access_ports - trunk_ports - routed_ports - hybrid_ports,
+                'lag_ports': lag_ports,
+                'unknown_ports': total_ports - access_ports - trunk_ports - routed_ports - lag_ports,
                 'speed_stats': speed_stats
             },
             'stack_info': stack_info,
@@ -581,7 +781,7 @@ class NetworkConfigParser:
                     'Access端口数': result['statistics']['access_ports'],
                     'Trunk端口数': result['statistics']['trunk_ports'],
                     'Routed端口数': result['statistics'].get('routed_ports', 0),
-                    'Hybrid端口数': result['statistics'].get('hybrid_ports', 0),
+                    'LAG端口数': result['statistics'].get('lag_ports', 0),
                     '未知类型端口数': result['statistics']['unknown_ports']
                 }
                 
@@ -619,16 +819,12 @@ class NetworkConfigParser:
                         # 添加额外信息
                         if 'stack_member' in intf:
                             intf_row['堆叠成员'] = intf['stack_member']
+                        if 'lag_member' in intf:
+                            intf_row['LAG成员'] = intf['lag_member']
                         if 'channel_group' in intf:
                             intf_row['端口聚合'] = intf['channel_group']
-                        if 'vpc' in intf:
-                            intf_row['vPC'] = intf['vpc']
                         if 'eth_trunk' in intf:
                             intf_row['链路聚合'] = intf['eth_trunk']
-                        if 'mlag' in intf:
-                            intf_row['MLAG'] = intf['mlag']
-                        if 'qinq' in intf:
-                            intf_row['QinQ'] = intf['qinq']
                         
                         interface_data.append(intf_row)
                     
@@ -653,72 +849,110 @@ class NetworkConfigParser:
         
         print(f"**分析完成！结果已保存到: {output_file}**")
 
-# 创建示例配置，展示各种接口类型（包括华为）
-def create_huawei_sample_config():
-    """创建华为设备示例配置"""
-    sample_config = """#
-# Huawei Versatile Routing Platform Software
-# VRP (R) software, Version 8.180 (CE6850 V200R005C00)
-#
-sysname SW-HUAWEI-CORE-01
-#
-interface GigabitEthernet0/0/1
- description To-Access-Switch-01
- port link-type access
- port default vlan 10
-#
-interface GigabitEthernet0/0/2
- port link-type trunk
- port trunk allow-pass vlan 10 20 30 to 40 100
- port trunk pvid vlan 1
-#
-interface XGigabitEthernet0/0/10
- description 10G-Uplink-to-Core
- port link-type trunk
- port trunk allow-pass vlan all
-#
-interface 40GE0/0/1
- description 40G-Link-to-Datacenter
- port link-type trunk
- port trunk allow-pass vlan 100 200 to 300
- eth-trunk 1
-#
-interface 100GE0/0/1
- description 100G-Backbone
- undo shutdown
- ip address 10.0.0.1 255.255.255.252
-#
-interface Eth-Trunk1
- description LAG-to-Datacenter
- port link-type trunk
- port trunk allow-pass vlan all
-#
-interface Vlanif100
- description Management-VLAN
- ip address 192.168.100.1 255.255.255.0
-#
-interface GigabitEthernet0/0/3
- port link-type hybrid
- port hybrid tagged vlan 100 200
- port hybrid untagged vlan 10
-#
-interface MEth0/0/1
- description Management-Port
- ip address 192.168.1.1 255.255.255.0
-#
+# 创建Ruckus ICX示例配置
+def create_ruckus_sample_config():
+    """创建Ruckus ICX设备示例配置"""
+    sample_config = """Current configuration:
+!
+ver 08.0.95gT211
+!
+stack unit 1
+  module 1 icx7150-48p-poe-port-management-module
+  module 2 icx7150-2-copper-port-2g-module
+  module 3 icx7150-4-sfp-plus-port-40g-module
+  stack-port 1/3/1
+  stack-port 1/3/3
+!
+stack unit 2
+  module 1 icx7150-48p-poe-port-management-module
+  module 2 icx7150-2-copper-port-2g-module
+  module 3 icx7150-4-sfp-plus-port-40g-module
+  stack-port 2/3/2
+  stack-port 2/3/4
+!
+!
+hostname "ICX7150-Stack"
+!
+vlan 1 name DEFAULT-VLAN by port
+!
+vlan 10 name USERS by port
+ tagged ethernet 1/1/49 to 1/1/52 ethernet 2/1/49 to 2/1/52
+ untagged ethernet 1/1/1 to 1/1/24
+ spanning-tree 802-1w
+!
+vlan 20 name SERVERS by port
+ tagged ethernet 1/1/49 to 1/1/52 ethernet 2/1/49 to 2/1/52
+ untagged ethernet 1/1/25 to 1/1/48 ethernet 2/1/1 to 2/1/24
+ router-interface ve 20
+ spanning-tree 802-1w
+!
+vlan 100 name MANAGEMENT by port
+ tagged ethernet 1/1/49 to 1/1/52 ethernet 2/1/49 to 2/1/52 lag 1
+ router-interface ve 100
+ spanning-tree 802-1w
+!
+!
+lag "LAG-TO-CORE" dynamic id 1
+ ports ethernet 1/2/1 ethernet 1/2/2
+ primary-port 1/2/1
+ deploy
+!
+!
+interface ethernet 1/1/1
+ port-name "User-Port-01"
+ enable
+!
+interface ethernet 1/1/25
+ port-name "Server-Port-01"
+ speed-duplex 1000-full
+ enable
+!
+interface ethernet 1/1/49
+ port-name "Uplink-to-Core-1"
+ speed-duplex 10g-full
+ enable
+!
+interface ethernet 2/1/1
+ port-name "Server-Port-25"
+ enable
+!
+interface ethernet 1/2/1
+ port-name "LAG-Member-1"
+ lag dynamic id 1
+ enable
+!
+interface ethernet 1/2/2
+ port-name "LAG-Member-2"
+ lag dynamic id 1
+ enable
+!
+interface lag 1
+ port-name "LAG-TO-CORE"
+ enable
+!
+interface ve 20
+ port-name "Server-VLAN-Interface"
+ ip address 192.168.20.1/24
+!
+interface ve 100
+ port-name "Management-Interface"
+ ip address 192.168.100.1/24
+!
+!
+end
 """
     
-    with open('sample_huawei_config.txt', 'w', encoding='utf-8') as f:
+    with open('sample_ruckus_config.txt', 'w', encoding='utf-8') as f:
         f.write(sample_config)
     
-    print("**华为设备示例配置文件已创建: sample_huawei_config.txt**")
+    print("**Ruckus ICX设备示例配置文件已创建: sample_ruckus_config.txt**")
 
 def main():
     """主函数"""
     parser = NetworkConfigParser()
     
     # 可选：创建示例配置
-    # create_huawei_sample_config()
+    # create_ruckus_sample_config()
     
     # 配置文件目录
     config_dir = input("请输入配置文件目录路径 (默认为当前目录): ").strip()
