@@ -342,6 +342,7 @@ def validate_device_data(device: Dict[str, str], row_idx: int) -> None:
     # **验证设备类型是否支持**
     normalized_type = normalize_device_type(device['device_type'])
     if normalized_type not in SUPPORTED_DEVICE_TYPES:
+        # 使用 print 即可，因为此时线程池尚未启动
         print(f"[WARN] Row {row_idx}: 未知设备类型 '{device['device_type']}' -> '{normalized_type}', 将使用默认配置")
 
 def load_excel(excel_file: str, sheet_name: str = 'Sheet1') -> List[Dict[str, str]]:
@@ -375,11 +376,28 @@ def load_excel(excel_file: str, sheet_name: str = 'Sheet1') -> List[Dict[str, st
             
         return devices
     except Exception as e:
+        # 主线程错误，使用 print 即可
         print(f"Excel处理失败: {str(e)}")
         sys.exit(1)
     finally:
         if wb:
             wb.close()
+
+def log_error(ip: str, error: str, use_tqdm_write: bool = False) -> None:
+    """安全记录错误日志（适配 tqdm）"""
+    sanitized = re.sub(r'(password|secret)\s*=\s*\S+', r'\1=***', error, flags=re.I)
+    log_line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} | {ip} | {sanitized}"
+    
+    with write_lock:
+        with open("error.log", 'a', encoding='utf-8') as f:
+            f.write(log_line + '\n')
+        
+        # **优化：使用 tqdm.write 避免进度条错乱**
+        output_message = f"{ip} [ERROR] {sanitized}"
+        if use_tqdm_write:
+            tqdm.write(output_message, file=sys.stderr)
+        else:
+            print(output_message)
 
 def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
     """**通用设备连接（支持所有netmiko设备）**"""
@@ -417,11 +435,9 @@ def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
 
     # **特殊协议配置**
     if device_type.endswith('_telnet'):
-        # Telnet连接不需要SSH相关参数
         params.pop('use_keys', None)
         params.pop('allow_agent', None)
     elif device_type.endswith('_serial'):
-        # 串口连接特殊配置
         if device.get('serial_settings'):
             params['serial_settings'] = device['serial_settings']
 
@@ -438,26 +454,25 @@ def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
         try:
             conn = netmiko.ConnectHandler(**params)
             
-            # **设备特定的后连接处理**
             post_connection_setup(conn, device_type, vendor, device.get('secret'))
             
             return conn
             
         except (NetmikoTimeoutException, NetmikoAuthenticationException) as e:
             if attempt < max_retries:
-                # 使用 tqdm.write 进行线程安全输出
-                tqdm.write(f"[RETRY {attempt+1}] {device['host']}: {e.__class__.__name__}")
+                # **优化：使用 tqdm.write 打印重试信息**
+                tqdm.write(f"[RETRY {attempt+1}] {device['host']}: {e.__class__.__name__}", file=sys.stderr)
                 time.sleep(2 ** attempt)
                 continue
-            log_error(device['host'], f"{e.__class__.__name__}: {str(e)} (Type: {device.get('original_type', device_type)})")
+            log_error(device['host'], f"{e.__class__.__name__}: {str(e)} (Type: {device.get('original_type', device_type)})", use_tqdm_write=True)
         except Exception as e:
             if attempt < max_retries:
-                # 使用 tqdm.write 进行线程安全输出
-                tqdm.write(f"[RETRY {attempt+1}] {device['host']}: Connection error")
+                # **优化：使用 tqdm.write 打印重试信息**
+                tqdm.write(f"[RETRY {attempt+1}] {device['host']}: Connection error", file=sys.stderr)
                 time.sleep(2 ** attempt)
                 continue
-            log_error(device['host'], f"连接异常: {str(e)} (Type: {device.get('original_type', device_type)})")
-            
+            log_error(device['host'], f"连接异常: {str(e)} (Type: {device.get('original_type', device_type)})", use_tqdm_write=True)
+    
     return None
 
 def post_connection_setup(conn: netmiko.BaseConnection, device_type: str, vendor: str, secret: Optional[str]) -> None:
@@ -471,61 +486,72 @@ def post_connection_setup(conn: netmiko.BaseConnection, device_type: str, vendor
             try:
                 conn.enable()
             except:
-                # 某些设备可能不需要enable或已经在enable模式
                 pass
         
         # **厂商特定初始化**
         if vendor == 'huawei':
-            # 华为设备：可能需要关闭分页
             try:
                 conn.send_command('screen-length 0 temporary', expect_string='>')
             except:
                 pass
         elif vendor == 'paloalto':
-            # PAN-OS：等待系统就绪
             time.sleep(2)
         elif vendor == 'fortinet':
-            # Fortinet：配置终端长度
             try:
                 conn.send_command('config system console\nset output standard\nend')
             except:
                 pass
         elif vendor == 'juniper':
-            # Juniper：设置终端长度
             try:
                 conn.send_command('set cli screen-length 0')
             except:
                 pass
         elif device_type in ['mikrotik_routeros']:
-            # MikroTik：特殊处理
             time.sleep(1)
         elif device_type.startswith('linux'):
-            # Linux设备：设置TERM
             try:
                 conn.send_command('export TERM=vt100')
             except:
                 pass
-                
+            
     except Exception as e:
-        # 后连接设置失败不应该中断连接
         pass
 
 def execute_commands(device: Dict[str, str], config_set: bool) -> Optional[str]:
     """**通用命令执行（适配所有设备类型）**"""
+    device_type = device['device_type']
+    
     try:
         cmds = [c.strip() for c in device.get('mult_command', '').split(';') if c.strip()]
         if not cmds:
-            # 使用 tqdm.write 进行线程安全输出
+            # **优化：使用 tqdm.write 打印警告信息**
             tqdm.write(f"{device['host']} [WARN] 无有效命令")
             return None
 
         if not (conn := connect_device(device)):
             return None
-        
-        # ... (其余逻辑保持不变)
-        
+
+        with conn:
+            vendor = get_device_vendor(device_type)
+            
+            # **获取设备主机名**
+            try:
+                device['hostname'] = extract_hostname(conn, device_type, vendor)
+            except:
+                device['hostname'] = 'unknown'
+
+            # **执行命令**
+            all_output = []
+            
+            if config_set:
+                all_output.extend(execute_config_commands(conn, cmds, device_type, vendor))
+            else:
+                all_output.extend(execute_show_commands(conn, cmds, device_type, vendor))
+
+            return "\n\n".join(all_output)
+            
     except Exception as e:
-        log_error(device['host'], f"执行异常 ({device.get('original_type', device_type)}): {str(e)}")
+        log_error(device['host'], f"执行异常 ({device.get('original_type', device_type)}): {str(e)}", use_tqdm_write=True)
         return None
 
 def extract_hostname(conn: netmiko.BaseConnection, device_type: str, vendor: str) -> str:
@@ -563,12 +589,10 @@ def execute_config_commands(conn: netmiko.BaseConnection, cmds: List[str], devic
     
     try:
         if vendor in ['paloalto', 'fortinet']:
-            # 这些设备需要单独发送配置命令
             for cmd in cmds:
                 output = conn.send_command(cmd, expect_string=r'[#>$]', delay_factor=2)
                 outputs.append(f"Config Command: {cmd}\n{output}")
         else:
-            # 标准配置模式
             output = conn.send_config_set(cmds, cmd_verify=False)
             outputs.append(output)
     except Exception as e:
@@ -654,18 +678,7 @@ IP地址: {ip}
         
         os.rename(tmp_path, os.path.join(output_dir, filename))
     except OSError as e:
-        log_error(ip, f"文件保存失败: {str(e)}")
-
-def log_error(ip: str, error: str) -> None:
-    """安全记录错误日志"""
-    sanitized = re.sub(r'(password|secret)\s*=\s*\S+', r'\1=***', error, flags=re.I)
-    log_line = f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S} | {ip} | {sanitized}"
-    
-    with write_lock:
-        with open("error.log", 'a', encoding='utf-8') as f:
-            f.write(log_line + '\n')
-        # 核心改动：使用 tqdm.write 确保错误信息平滑输出
-        tqdm.write(f"{ip} [ERROR] {sanitized}")
+        log_error(ip, f"文件保存失败: {str(e)}", use_tqdm_write=True) # 同样使用 tqdm.write
 
 def batch_execute(
     devices: List[Dict[str, str]],
@@ -675,19 +688,22 @@ def batch_execute(
 ) -> None:
     """批量执行"""
     success_count = 0
+    
+    # 首次执行，清空日志文件，保证日志文件的正确性
+    if os.path.exists("error.log"):
+        os.remove("error.log")
+        
     try:
         with ThreadPoolExecutor(
             max_workers=max_workers,
             initializer=thread_initializer
         ) as executor:
             futures = {executor.submit(execute_commands, dev, config_set): dev for dev in devices}
-            
-            # 进度条配置：leave=True 确保完成后进度条留在控制台
-            progress = tqdm(total=len(devices), desc="执行进度", unit="台", leave=True)
+            # 初始化进度条
+            progress = tqdm(total=len(devices), desc="执行进度", unit="台")
 
             try:
                 for future in as_completed(futures):
-                    # ... (结果处理和保存逻辑保持不变)
                     dev = futures[future]
                     try:
                         if (result := future.result()) is not None:
@@ -701,13 +717,16 @@ def batch_execute(
                             )
                             success_count += 1
                     except Exception as e:
-                        # 异常通过 log_error 处理，log_error 会使用 tqdm.write
-                        log_error(dev['host'], str(e))
+                        # 异常已在 execute_commands/log_error 中处理，这里捕获的是线程级别异常，通常可以忽略或简单记录。
+                        # log_error(dev['host'], f"Future result error: {str(e)}", use_tqdm_write=True)
+                        pass
                     finally:
                         progress.update(1)
+                
                 progress.close()
-                # 最后的总结信息也应该使用 print，因为此时进度条已经关闭
-                print(f"\n**完成**: 成功 {success_count}/{len(devices)} 台设备")
+                # **优化：使用 tqdm.write 打印最终结果**
+                tqdm.write(f"\n**完成**: 成功 {success_count}/{len(devices)} 台设备")
+            
             except KeyboardInterrupt:
                 progress.close()
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -749,9 +768,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--list-devices', action='store_true', help='列出所有支持的设备类型')
 
     if '--version' in sys.argv or '-V' in sys.argv:
-        print("Python ", platform.python_version())
+        print("Python ", platform.python_version(), platform.platform())
         print("Netmiko ", netmiko.__version__)
-        print("System ", platform.platform())
         sys.exit(0)
 
     if '--help' in sys.argv or '-h' in sys.argv:
@@ -764,18 +782,19 @@ def parse_args() -> argparse.Namespace:
 - **厂商特定优化配置** (针对不同厂商调优)
 - **自动重试机制** (连接失败自动重试)
 - **并发执行** (多线程提高效率)
+- **优化**: 解决了多线程并发日志输出导致进度条错乱的问题。
 
 **使用方法**:
   python connexec.py -i <设备清单.xlsx> [选项]
 
 **参数说明**:
-  -i, --input        必需  Excel文件路径  
-  -t, --threads      可选  并发线程数 (默认: {DEFAULT_THREADS})
-  -cs, --config_set  可选  使用配置模式
-  -d, --destination  可选  结果保存路径
-  -s, --sheet        可选  Excel工作表名
-  --debug            可选  启用详细日志
-  --list-devices     可选  显示支持的设备类型
+  -i, --input      必需  Excel文件路径  
+  -t, --threads    可选  并发线程数 (默认: {DEFAULT_THREADS})
+  -cs, --config_set 可选  使用配置模式
+  -d, --destination 可选  结果保存路径
+  -s, --sheet      可选  Excel工作表名
+  --debug          可选  启用详细日志
+  --list-devices   可选  显示支持的设备类型
 
 **Excel格式**:
 | host        | username | password | device_type  | secret | port | mult_command             |
