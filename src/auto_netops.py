@@ -351,7 +351,8 @@ def post_connection_setup(conn: netmiko.BaseConnection, device_type: str, vendor
                 # 其他厂商发送单行命令
                 for cmd in init_cmds:
                     # 对于 Huawei, Juniper, Linux 等，确保命令发送成功
-                    conn.send_command(cmd, expect_string=r'[#>]', delay_factor=1)
+                    # 保留硬编码的 [#>] 模式，作为对 Netmiko 默认行为的增强，防止提示符识别失败
+                    conn.send_command(cmd, expect_string=r'[#>]', delay_factor=1) 
         except Exception as e:
             tqdm.write(f"[WARN] {conn.host} Init commands failed: {str(e)}", file=sys.stderr)
 
@@ -451,17 +452,46 @@ def execute_config_commands(conn: netmiko.BaseConnection, cmds: List[str], devic
     
     return outputs
 
+# 通用提示符正则表达式：匹配 #, >, $ (Linux), % (Juniper/Linux), @ (Linux/Email) 
+# 注意：使用 | 分隔符，使其匹配其中任何一个。
+COMMON_PROMPT_REGEX = r'[#>\$%@]' 
+
 def execute_show_commands(conn: netmiko.BaseConnection, cmds: List[str], device_type: str, vendor: str) -> List[str]:
-    """查看命令执行"""
+    """查看命令执行 - 优化后使用通用 expect_string 增强健壮性"""
     outputs = []
     
-    # 厂商特定的延迟因子
+    # 厂商特定的延迟因子（保留，因为它优化了性能）
     delay_factors = {'huawei': 2, 'paloalto': 3, 'fortinet': 2, 'juniper': 2, 'ruckus': 2, 'extreme': 2, 'mikrotik': 3, 'default': 1}
     delay_factor = delay_factors.get(vendor, 1)
+
+    # 显式设置 expect_string 来确保 Netmiko 不依赖自动识别，而是显式等待一个通用提示符
+    # 策略：使用当前 Netmiko 学习到的 base_prompt 作为主要模式，回退到通用模式
+    try:
+        # Netmiko 学习到的 base_prompt 包含主机名，更精确
+        # 匹配：主机名# | 任意字符 + 通用符号
+        expect_pattern = re.escape(conn.base_prompt) + r'|\S+' + COMMON_PROMPT_REGEX
+    except:
+        # 如果 base_prompt 访问失败，使用通用回退
+        expect_pattern = r'\S+' + COMMON_PROMPT_REGEX
     
+    # Fortinet/PaloAlto/Mikrotik 等设备通常不会显示配置模式提示符，需要特殊处理，依赖默认行为
+    if vendor in ['paloalto', 'fortinet', 'mikrotik']:
+        expect_pattern = None 
+
     for cmd in cmds:
         try:
-            output = conn.send_command(cmd, cmd_verify=False, delay_factor=delay_factor)
+            if expect_pattern is not None:
+                # 使用显式模式，增强提示符识别的健壮性
+                output = conn.send_command(
+                    cmd, 
+                    cmd_verify=False, 
+                    delay_factor=delay_factor,
+                    expect_string=expect_pattern 
+                )
+            else:
+                # 依赖 Netmiko 驱动的默认行为（Fortinet, PaloAlto 等）
+                output = conn.send_command(cmd, cmd_verify=False, delay_factor=delay_factor)
+
             outputs.append(f"Command: {cmd}\n{output}")
             
         except Exception as e:
@@ -686,4 +716,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-    
