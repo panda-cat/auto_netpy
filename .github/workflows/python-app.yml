@@ -40,57 +40,77 @@ jobs:
           # 如果你有 requirements.txt，也安装其他依赖
           pip install -r src/requirements.txt
 
-      - name: Build executable
-        # 根据不同的操作系统定义输出文件名和 PyInstaller 选项
+      - name: Define App Variables
+        # 定义应用名称和主脚本路径，确保它们在所有平台中保持一致
         run: |
-          APP_NAME="NCM" # 替换为你的应用名称
-          SCRIPT_PATH="src/auto_netops.py" # 替换为你的主脚本路径
-          
-          # 针对不同 OS 的文件扩展名和打包选项
+          echo "APP_NAME=Netdevices-MGT" >> $GITHUB_ENV       # 替换为你的应用名称 (例如：YourApp)
+          echo "SCRIPT_PATH=src/auto_netops.py" >> $GITHUB_ENV # 替换为你的主脚本路径
+        shell: bash
+
+      - name: Build executable
+        run: |
+          # PyInstaller 的 --name 参数设置为 APP_NAME
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # Windows: 
-            EXT=".exe"
-            PYINSTALLER_OPTS="--onefile" # 或其他选项
+            PYINSTALLER_OPTS="--onefile --noconsole"
           elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            # macOS: 
-            EXT="" # macOS 可执行文件通常没有扩展名，或使用 .app
-            # 使用 --windowed 选项可以创建 .app Bundle
+            # macOS: 使用 --windowed 创建 .app Bundle
             PYINSTALLER_OPTS="--onefile --windowed" 
           else
             # Linux (ubuntu-latest):
-            EXT=""
             PYINSTALLER_OPTS="--onefile"
           fi
           
-          echo "EXECUTABLE_NAME=${APP_NAME}_${{ matrix.os }}${EXT}" >> $GITHUB_ENV
-          
-          pyinstaller $SCRIPT_PATH $PYINSTALLER_OPTS --name $APP_NAME
-        shell: bash # 在 Windows 上也使用 bash shell，以便执行 if/else 逻辑
+          pyinstaller ${{ env.SCRIPT_PATH }} $PYINSTALLER_OPTS --name ${{ env.APP_NAME }}
+        shell: bash
 
       - name: Rename and prepare artifact
         run: |
-          # 找到 PyInstaller 生成的最终文件（通常在 dist/ 目录下）
-          # 对于 Linux/Windows onefile，它在 dist/ 
-          # 对于 macOS windowed，它在 dist/*.app
+          PLATFORM_NAME=""
+          FINAL_PATH=""
           
-          # 重命名或准备最终的发布文件/文件夹
-          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
-            # 对于 macOS .app 文件夹，打包成 .zip
-            zip -r ${{ env.EXECUTABLE_NAME }}.zip dist/$APP_NAME.app
-            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}.zip" >> $GITHUB_ENV
-          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            # 对于 Windows .exe
-            mv dist/$APP_NAME.exe ${{ env.EXECUTABLE_NAME }}
-            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}" >> $GITHUB_ENV
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            PLATFORM_NAME="windows"
+            # Windows 的可执行文件是 dist/APP_NAME.exe
+            FINAL_PATH="dist/${{ env.APP_NAME }}.exe"
+            echo "EXECUTABLE_NAME=${{ env.APP_NAME }}_${PLATFORM_NAME}.exe" >> $GITHUB_ENV
+            
+            # 重命名文件
+            mv "${FINAL_PATH}" "${{ env.APP_NAME }}_${PLATFORM_NAME}.exe"
+            echo "ARTIFACT_PATH=${{ env.APP_NAME }}_${PLATFORM_NAME}.exe" >> $GITHUB_ENV
+            
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            PLATFORM_NAME="macos"
+            # macOS 的应用是一个文件夹：dist/APP_NAME.app
+            FINAL_PATH="dist/${{ env.APP_NAME }}.app"
+            ZIP_NAME="${{ env.APP_NAME }}_${PLATFORM_NAME}.zip"
+
+            # 压缩 .app 文件夹
+            zip -r "${ZIP_NAME}" "${FINAL_PATH}"
+            
+            echo "EXECUTABLE_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+            echo "ARTIFACT_PATH=${ZIP_NAME}" >> $GITHUB_ENV
+            
           else
-            # 对于 Linux
-            mv dist/$APP_NAME ${{ env.EXECUTABLE_NAME }}
-            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}" >> $GITHUB_ENV
+            PLATFORM_NAME="linux"
+            # Linux 的可执行文件是 dist/APP_NAME
+            FINAL_PATH="dist/${{ env.APP_NAME }}"
+            FINAL_NAME="${{ env.APP_NAME }}_${PLATFORM_NAME}"
+            
+            # 确保 Linux 可执行文件具有执行权限
+            chmod +x "${FINAL_PATH}"
+            
+            # 重命名文件
+            mv "${FINAL_PATH}" "${FINAL_NAME}"
+            
+            echo "EXECUTABLE_NAME=${FINAL_NAME}" >> $GITHUB_ENV
+            echo "ARTIFACT_PATH=${FINAL_NAME}" >> $GITHUB_ENV
           fi
+          
+        # 注意：使用 bash shell，即使在 Windows 上，也能更好地处理文件路径和变量
         shell: bash
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.EXECUTABLE_NAME }} # 使用特定的文件名作为 artifact 名称
-          path: ${{ env.ARTIFACT_PATH }} # 上传最终的文件/zip
+          name: ${{ env.EXECUTABLE_NAME }}
+          path: ${{ env.ARTIFACT_PATH }}
