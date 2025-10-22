@@ -1,0 +1,96 @@
+name: Build Multi-Platform Executables
+
+on:
+  push:
+    tags:
+      - 'v*' # 当推送版本标签时触发 (例如 v1.0.0)
+  workflow_dispatch: # 允许手动运行
+
+jobs:
+  build:
+    # 使用矩阵策略在不同的操作系统上运行作业
+    strategy:
+      fail-fast: false # 允许一个平台的构建失败，而其他平台继续
+      matrix:
+        # 定义要运行的操作系统（GitHub Actions Runner）
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        
+        # 可选：如果你需要为每个平台定制更多参数，可以添加一个独立的 matrix 变量，例如：
+        # config: 
+        #   - { os: ubuntu-latest, name: "linux", extension: "" }
+        #   - { os: windows-latest, name: "windows", extension: ".exe" }
+        #   - { os: macos-latest, name: "macos", extension: "" }
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        # 根据你的项目需求设置 Python 版本
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x' 
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller # 安装 PyInstaller
+          # 如果你有 requirements.txt，也安装其他依赖
+          # pip install -r requirements.txt
+
+      - name: Build executable
+        # 根据不同的操作系统定义输出文件名和 PyInstaller 选项
+        run: |
+          APP_NAME="my_app" # 替换为你的应用名称
+          SCRIPT_PATH="your_script.py" # 替换为你的主脚本路径
+          
+          # 针对不同 OS 的文件扩展名和打包选项
+          if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # Windows: 
+            EXT=".exe"
+            PYINSTALLER_OPTS="--onefile" # 或其他选项
+          elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            # macOS: 
+            EXT="" # macOS 可执行文件通常没有扩展名，或使用 .app
+            # 使用 --windowed 选项可以创建 .app Bundle
+            PYINSTALLER_OPTS="--onefile --windowed" 
+          else
+            # Linux (ubuntu-latest):
+            EXT=""
+            PYINSTALLER_OPTS="--onefile"
+          fi
+          
+          echo "EXECUTABLE_NAME=${APP_NAME}_${{ matrix.os }}${EXT}" >> $GITHUB_ENV
+          
+          pyinstaller $SCRIPT_PATH $PYINSTALLER_OPTS --name $APP_NAME
+        shell: bash # 在 Windows 上也使用 bash shell，以便执行 if/else 逻辑
+
+      - name: Rename and prepare artifact
+        run: |
+          # 找到 PyInstaller 生成的最终文件（通常在 dist/ 目录下）
+          # 对于 Linux/Windows onefile，它在 dist/ 
+          # 对于 macOS windowed，它在 dist/*.app
+          
+          # 重命名或准备最终的发布文件/文件夹
+          if [[ "${{ matrix.os }}" == "macos-latest" ]]; then
+            # 对于 macOS .app 文件夹，打包成 .zip
+            zip -r ${{ env.EXECUTABLE_NAME }}.zip dist/$APP_NAME.app
+            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}.zip" >> $GITHUB_ENV
+          elif [[ "${{ matrix.os }}" == "windows-latest" ]]; then
+            # 对于 Windows .exe
+            mv dist/$APP_NAME.exe ${{ env.EXECUTABLE_NAME }}
+            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}" >> $GITHUB_ENV
+          else
+            # 对于 Linux
+            mv dist/$APP_NAME ${{ env.EXECUTABLE_NAME }}
+            echo "ARTIFACT_PATH=${{ env.EXECUTABLE_NAME }}" >> $GITHUB_ENV
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.EXECUTABLE_NAME }} # 使用特定的文件名作为 artifact 名称
+          path: ${{ env.ARTIFACT_PATH }} # 上传最终的文件/zip
