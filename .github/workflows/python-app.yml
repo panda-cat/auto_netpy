@@ -51,7 +51,7 @@ jobs:
         run: |
           # PyInstaller 的 --name 参数设置为 APP_NAME
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
-            PYINSTALLER_OPTS="--onefile --noconsole"
+            PYINSTALLER_OPTS="--onefile"
           elif [[ "${{ matrix.os }}" == "macos-latest" ]]; then
             # macOS: 使用 --windowed 创建 .app Bundle
             PYINSTALLER_OPTS="--onefile --windowed" 
