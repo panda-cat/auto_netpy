@@ -774,9 +774,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--list-devices', action='store_true', help='列出所有支持的设备类型')
 
     if '--version' in sys.argv or '-V' in sys.argv:
-        print("Python ", platform.python_version())
-        print("Netmiko ", netmiko.__version__)
-        print("System ", platform.platform())
+        print("Python", platform.python_version(), platform.platform())
+        print("Netmiko", netmiko.__version__)
         sys.exit(0)
 
     if '--help' in sys.argv or '-h' in sys.argv:
