@@ -25,42 +25,59 @@ from netmiko.ssh_dispatcher import CLASS_MAPPER
 # ==============================================================================
 os.environ["NO_COLOR"] = "1"
 write_lock = Lock()
-# **优化点 1: 限制线程数到更安全的范围 (IO密集型任务: CPU * 5 倍，上限 128)**
+# 优化: 限制线程数到更安全的范围 (IO密集型任务: CPU * 5 倍，上限 128)
 DEFAULT_MAX_THREADS = 128
 DEFAULT_THREADS = min(DEFAULT_MAX_THREADS, max(4, (os.cpu_count() or 4) * 5))
 
 # 动态获取所有支持的设备类型
 SUPPORTED_DEVICE_TYPES = set(CLASS_MAPPER.keys())
 
-# 设备类型别名映射（保持不变，已很完善）
+# 设备类型别名映射（常用别名到标准类型）
 DEVICE_TYPE_ALIASES = {
     # Cisco设备
-    'cisco': 'cisco_ios', 'cisco_switch': 'cisco_ios', 'cisco_router': 'cisco_ios',
-    'nexus': 'cisco_nxos', 'asa': 'cisco_asa', 'ios_xe': 'cisco_xe',
-    'ios_xr': 'cisco_xr', 'cisco_wlc': 'cisco_wlc_ssh',
+    'cisco': 'cisco_ios', 'cisco_switch': 'cisco_ios', 'cisco_router': 'cisco_ios', 'cisco_catalyst': 'cisco_ios',
+    'nexus': 'cisco_nxos', 'cisco_nexus': 'cisco_nxos', 'asa': 'cisco_asa', 'cisco_firewall': 'cisco_asa',
+    'ios_xe': 'cisco_xe', 'ios_xr': 'cisco_xr', 'cisco_wlc': 'cisco_wlc_ssh',
     
     # Huawei设备
-    'huawei': 'huawei', 'vrp': 'huawei', 'vrpv8': 'huawei_vrpv8',
+    'huawei': 'huawei', 'huawei_switch': 'huawei', 'huawei_router': 'huawei', 'huawei_firewall': 'huawei',
+    'vrp': 'huawei', 'vrpv8': 'huawei_vrpv8', 'huawei_vrp': 'huawei_vrpv8',
     
-    # HP/H3C/Aruba设备 (Comware通常是H3C/HP)
-    'hp': 'hp_comware', 'comware': 'hp_comware', 'h3c': 'hp_comware',
-    'procurve': 'hp_procurve', 'aruba': 'aruba_os',
+    # HP/H3C/Aruba设备
+    'hp': 'hp_comware', 'hp_switch': 'hp_comware', 'comware': 'hp_comware', 'h3c': 'hp_comware',
+    'procurve': 'hp_procurve', 'hp_procurve_switch': 'hp_procurve', 'aruba': 'aruba_os',
     
     # Juniper设备
-    'juniper': 'juniper', 'junos': 'juniper', 'srx': 'juniper_screenos',
+    'juniper': 'juniper', 'junos': 'juniper', 'juniper_switch': 'juniper', 'juniper_router': 'juniper',
+    'juniper_firewall': 'juniper_screenos', 'srx': 'juniper_screenos',
     
     # Fortinet/PaloAlto设备
-    'fortinet': 'fortinet', 'fortigate': 'fortinet', 'paloalto': 'paloalto_panos', 'panos': 'paloalto_panos',
+    'fortinet': 'fortinet', 'fortigate': 'fortinet', 'fortios': 'fortinet', 'fortinet_firewall': 'fortinet',
+    'paloalto': 'paloalto_panos', 'panos': 'paloalto_panos', 'pa': 'paloalto_panos', 'paloalto_firewall': 'paloalto_panos',
     
-    # 其他常用设备
-    'dell': 'dell_force10', 'extreme': 'extreme', 'exos': 'extreme_exos',
-    'ruckus': 'ruckus_fastiron', 'brocade': 'ruckus_fastiron', 'fastiron': 'ruckus_fastiron',
-    'mikrotik': 'mikrotik_routeros', 'routeros': 'mikrotik_routeros',
-    'nokia': 'nokia_sros', 'f5': 'f5_tmsh', 'bigip': 'f5_tmsh', 'linux': 'linux',
-    'terminal_server': 'generic_termserver'
+    # Dell设备
+    'dell': 'dell_force10', 'force10': 'dell_force10', 'dell_powerconnect': 'dell_powerconnect',
+    'dell_os6': 'dell_os6', 'dell_os9': 'dell_os9', 'dell_os10': 'dell_os10',
+    
+    # Extreme设备
+    'extreme': 'extreme', 'extreme_switch': 'extreme', 'extreme_exos': 'extreme_exos',
+    'exos': 'extreme_exos', 'extreme_wing': 'extreme_wing',
+    
+    # Ruckus/Brocade设备
+    'ruckus': 'ruckus_fastiron', 'ruckus_switch': 'ruckus_fastiron', 'ruckus_icx': 'ruckus_fastiron',
+    'fastiron': 'ruckus_fastiron', 'brocade': 'ruckus_fastiron',
+    
+    # Mikrotik设备
+    'mikrotik': 'mikrotik_routeros', 'routeros': 'mikrotik_routeros', 'mikrotik_router': 'mikrotik_routeros',
+    
+    # 其他设备
+    'alcatel': 'alcatel_aos', 'nokia': 'nokia_sros', 'sros': 'nokia_sros', 'avaya': 'avaya_ers',
+    'allied_telesis': 'allied_telesis_awplus', 'f5': 'f5_tmsh', 'bigip': 'f5_tmsh', 'a10': 'a10',
+    'linux': 'linux', 'ubuntu': 'linux', 'centos': 'linux', 'redhat': 'linux', 'debian': 'linux',
+    'generic_termserver': 'generic_termserver', 'terminal_server': 'generic_termserver'
 }
 
-# **优化点 2: 抽象厂商配置（新增 requires_enable 和 init_commands）**
+# 优化: 抽象厂商配置（新增 requires_enable 和 init_commands）
 DEVICE_VENDOR_CONFIGS = {
     # Cisco厂商设备 (需要Enable)
     'cisco': {
@@ -68,31 +85,31 @@ DEVICE_VENDOR_CONFIGS = {
         'requires_enable': True,
     },
     
-    # Huawei厂商设备 (通常不需要Enable，需要关闭分页)
+    # Huawei厂商设备 (不需要Enable，需要关闭分页)
     'huawei': {
         'timeout': 30, 'banner_timeout': 20, 'auth_timeout': 15, 'global_delay_factor': 2, 'conn_timeout': 15,
         'requires_enable': False,
         'init_commands': ['screen-length 0 temporary']
     },
     
-    # Juniper厂商设备 (不需要Enable)
+    # Juniper厂商设备 (不需要Enable，需要关闭分页)
     'juniper': {
         'timeout': 35, 'banner_timeout': 25, 'auth_timeout': 15, 'global_delay_factor': 2, 'conn_timeout': 15,
         'requires_enable': False,
         'init_commands': ['set cli screen-length 0']
     },
     
-    # HP/H3C厂商设备 (Procurve通常需要Enable, Comware通常不需要)
+    # HP/H3C厂商设备 (Comware不需要，Procurve需要)
     'hp': {
         'timeout': 25, 'banner_timeout': 15, 'auth_timeout': 10, 'global_delay_factor': 1, 'conn_timeout': 10,
-        'requires_enable': True, # 默认为 True，以覆盖 Procurve
+        'requires_enable': True, # 默认为 True
     },
     
-    # Fortinet厂商设备 (通常不需要Enable，需要设置终端)
+    # Fortinet厂商设备 (不需要Enable，需要设置终端)
     'fortinet': {
         'timeout': 30, 'banner_timeout': 20, 'auth_timeout': 15, 'global_delay_factor': 2, 'conn_timeout': 15,
         'requires_enable': False, 'use_keys': False, 'allow_agent': False,
-        'init_commands': ['config system console', 'set output standard', 'end']
+        'init_commands': ['config system console', 'set output standard', 'end'] # Fortinet需要 send_config_set
     },
     
     # PaloAlto厂商设备 (不需要Enable，需要连接后延迟)
@@ -102,12 +119,12 @@ DEVICE_VENDOR_CONFIGS = {
         'post_connect_sleep': 2 # 特殊处理：连接后等待
     },
     
-    # Ruckus/Dell/Extreme (需要Enable)
+    # Dell/Extreme/Ruckus (需要Enable)
     'dell': {'requires_enable': True, **{'timeout': 30, 'global_delay_factor': 1, 'conn_timeout': 10}},
     'extreme': {'requires_enable': True, **{'timeout': 30, 'global_delay_factor': 2, 'conn_timeout': 15}},
     'ruckus': {'requires_enable': True, **{'timeout': 30, 'global_delay_factor': 2, 'conn_timeout': 15}},
     
-    # Mikrotik设备 (不需要Enable)
+    # Mikrotik设备 (不需要Enable，需要连接后延迟)
     'mikrotik': {
         'timeout': 30, 'banner_timeout': 20, 'auth_timeout': 15, 'global_delay_factor': 3, 'conn_timeout': 15,
         'requires_enable': False,
@@ -188,20 +205,20 @@ def validate_device_data(device: Dict[str, str], row_idx: int) -> None:
     
     normalized_type = normalize_device_type(device['device_type'])
     if normalized_type not in SUPPORTED_DEVICE_TYPES:
-        # **优化点 3: 使用 tqdm.write() 输出警告**
+        # 优化: 使用 tqdm.write() 输出警告
         tqdm.write(f"[WARN] Row {row_idx} ({device['host']}): 未知设备类型 '{device['device_type']}' -> '{normalized_type}', 将使用默认配置", file=sys.stderr)
 
 def load_excel(excel_file: str, sheet_name: str = 'Sheet1') -> List[Dict[str, str]]:
-    """加载Excel设备清单 (保持不变，已很高效)"""
+    """加载Excel设备清单"""
     devices = []
     wb = None
     try:
-        # ... (加载Excel逻辑保持不变)
         wb = openpyxl.load_workbook(excel_file, read_only=True)
-        # ...
+        
+        if sheet_name not in wb.sheetnames:
+            raise ValueError(f"工作表 '{sheet_name}' 不存在")
         sheet = wb[sheet_name]
         
-        # ... (读取头和数据逻辑保持不变)
         headers = [str(cell.value).lower().strip() for cell in sheet[1]]
         required = ['host', 'device_type']
         if missing := [f for f in required if f not in headers]:
@@ -229,7 +246,7 @@ def load_excel(excel_file: str, sheet_name: str = 'Sheet1') -> List[Dict[str, st
 
 def log_error(ip: str, error: str) -> None:
     """
-    **优化点 4: 核心优化：使用 tqdm.write() 代替 print()**
+    核心优化: 使用 tqdm.write() 代替 print() 确保进度条不被干扰
     安全记录错误日志，并使用 tqdm.write 避免进度条干扰
     """
     sanitized = re.sub(r'(password|secret)\s*=\s*\S+', r'\1=***', error, flags=re.I)
@@ -255,20 +272,23 @@ def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
     device_config = get_device_config(device_type)
     vendor = get_device_vendor(device_type)
     
+    # 基础连接参数
     params = {
         'device_type': device_type, 'host': device['host'], 'username': device['username'],
         'password': device['password'], 'timeout': device_config['timeout'],
         'banner_timeout': device_config['banner_timeout'], 'auth_timeout': device_config['auth_timeout'],
         'global_delay_factor': device_config['global_delay_factor'], 'conn_timeout': device_config['conn_timeout'],
-        'read_timeout_override': int(device.get('readtime', device_config['timeout']))
+        'read_timeout_override': int(device.get('readtime', device_config['timeout'])),
+        # 兼容性参数
+        'fast_cli': device_config.get('fast_cli', False),
+        'session_timeout': device_config.get('session_timeout', 60),
     }
     
+    # 可选参数
     if device.get('secret'): params['secret'] = device['secret']
     if device.get('port'): params['port'] = int(device['port'])
     if 'use_keys' in device_config: params['use_keys'] = device_config['use_keys']
     if 'allow_agent' in device_config: params['allow_agent'] = device_config['allow_agent']
-
-    # 特殊协议配置
     if device_type.endswith('_telnet'):
         params.pop('use_keys', None); params.pop('allow_agent', None)
     
@@ -279,7 +299,7 @@ def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
         log_file = f"{sanitize_filename(device['host'])}_{uuid.uuid4().hex[:6]}.log"
         params['session_log'] = os.path.join(debug_dir, log_file)
 
-    # 多重连接尝试 (优化点 5: 使用 tqdm.write() 报告重试)
+    # 多重连接尝试 (使用 tqdm.write() 报告重试)
     max_retries = 2
     for attempt in range(max_retries + 1):
         try:
@@ -306,7 +326,7 @@ def connect_device(device: Dict[str, str]) -> Optional[netmiko.BaseConnection]:
 
 def post_connection_setup(conn: netmiko.BaseConnection, device_type: str, vendor: str, secret: Optional[str]) -> None:
     """
-    **优化点 6: 简化连接后设置，抽象化配置**
+    简化连接后设置，抽象化配置
     处理 enable 模式、初始化命令和连接后延迟。
     """
     device_config = get_device_config(device_type)
@@ -316,24 +336,24 @@ def post_connection_setup(conn: netmiko.BaseConnection, device_type: str, vendor
         try:
             conn.enable()
         except (NetmikoAuthenticationException, NetmikoTimeoutException):
-            pass # 预期失败，保持连接
+            pass # 预期失败，保持连接 (如设备已在特权模式)
         except Exception as e:
             tqdm.write(f"[WARN] {conn.host} Unexpected error during enable: {str(e)}. Continuing...", file=sys.stderr)
             pass
             
     # 2. 初始化命令
     if init_cmds := device_config.get('init_commands'):
-        for cmd in init_cmds:
-            try:
-                # Fortinet 需要发送多行配置，使用 send_config_set
-                if vendor == 'fortinet':
-                    conn.send_config_set(init_cmds, cmd_verify=False)
-                    break # Fortinet 配置是一组，只发一次
-                
+        try:
+            # Fortinet/H3C/Comware 的配置命令通常使用 send_config_set
+            if vendor in ['fortinet', 'hp'] and conn.device_type in ['fortinet', 'hp_comware']:
+                conn.send_config_set(init_cmds, cmd_verify=False)
+            else:
                 # 其他厂商发送单行命令
-                conn.send_command(cmd, expect_string=r'[#>]', delay_factor=1)
-            except Exception as e:
-                tqdm.write(f"[WARN] {conn.host} Init command '{cmd}' failed: {str(e)}", file=sys.stderr)
+                for cmd in init_cmds:
+                    # 对于 Huawei, Juniper, Linux 等，确保命令发送成功
+                    conn.send_command(cmd, expect_string=r'[#>]', delay_factor=1)
+        except Exception as e:
+            tqdm.write(f"[WARN] {conn.host} Init commands failed: {str(e)}", file=sys.stderr)
 
     # 3. 连接后延迟
     if sleep_time := device_config.get('post_connect_sleep'):
@@ -347,7 +367,7 @@ def execute_commands(device: Dict[str, str], config_set: bool) -> Optional[str]:
     try:
         cmds = [c.strip() for c in device.get('mult_command', '').split(';') if c.strip()]
         if not cmds:
-            # **优化点 7: 使用 tqdm.write() 输出警告**
+            # 使用 tqdm.write() 输出警告
             tqdm.write(f"{device['host']} [WARN] 无有效命令", file=sys.stderr)
             return None
 
@@ -359,7 +379,7 @@ def execute_commands(device: Dict[str, str], config_set: bool) -> Optional[str]:
             
             # 获取设备主机名
             try:
-                # **优化点 8: 优先尝试使用 netmiko 的 base_prompt 作为主机名**
+                # 优先尝试使用 netmiko 的 base_prompt
                 device['hostname'] = getattr(conn, 'base_prompt', 'unknown').split('(')[0].strip()
                 if device['hostname'] == 'unknown' or not device['hostname']:
                      device['hostname'] = extract_hostname(conn, device_type, vendor)
@@ -381,7 +401,6 @@ def execute_commands(device: Dict[str, str], config_set: bool) -> Optional[str]:
 
 def extract_hostname(conn: netmiko.BaseConnection, device_type: str, vendor: str) -> str:
     """提取设备主机名（多厂商适配的回退逻辑）"""
-    # ... (保持原来的正则逻辑，作为对 Netmiko base_prompt 失败的回退)
     try:
         prompt = conn.find_prompt().strip()
         
@@ -408,16 +427,15 @@ def extract_hostname(conn: netmiko.BaseConnection, device_type: str, vendor: str
     except:
         return 'unknown'
 
-
 def execute_config_commands(conn: netmiko.BaseConnection, cmds: List[str], device_type: str, vendor: str) -> List[str]:
     """配置模式命令执行"""
     outputs = []
     
     try:
-        # PaloAlto/Fortinet 的配置命令通常在 enable 模式下单独发送 (已在 post_connection_setup 处理 fortinet 初始化)
+        # PaloAlto/Fortinet 的配置命令通常在 enable 模式下单独发送
         if vendor in ['paloalto', 'fortinet']:
             for cmd in cmds:
-                # Fortinet 配置命令不能使用 send_command，需使用 send_config_set
+                # Fortinet 配置命令必须使用 send_config_set
                 if vendor == 'fortinet':
                     output = conn.send_config_set([cmd], cmd_verify=False)
                 else:
@@ -443,18 +461,52 @@ def execute_show_commands(conn: netmiko.BaseConnection, cmds: List[str], device_
     
     for cmd in cmds:
         try:
-            # 标准命令发送
             output = conn.send_command(cmd, cmd_verify=False, delay_factor=delay_factor)
             outputs.append(f"Command: {cmd}\n{output}")
             
         except Exception as e:
-            # **优化点 9: 细化命令执行失败时的日志**
+            # 细化命令执行失败时的日志
             log_error(conn.host, f"Command execution failed: {cmd} - {str(e)}")
             outputs.append(f"Command: {cmd}\nError: {str(e)}")
     
     return outputs
 
-# ... (save_result 函数保持不变，因为它已经使用了 write_lock)
+def save_result(ip: str, hostname: str, output: str, dest_path: str, device_type: str = '', original_type: str = '') -> None:
+    """保存执行结果"""
+    date_str = datetime.datetime.now().strftime('%Y%m%d')
+    output_dir = os.path.join(dest_path, f"result_{date_str}")
+    os.makedirs(output_dir, exist_ok=True)
+
+    vendor = get_device_vendor(device_type)
+    filename = f"{ip}_{sanitize_filename(hostname)}.txt"
+    timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    
+    content = f"""=== 设备信息 ===
+
+IP地址: {ip}
+主机名: {sanitize_filename(hostname)}
+设备类型: {device_type}
+原始类型: {original_type}
+厂商: {vendor}
+执行时间: {timestamp}
+
+=== 执行结果 ===
+{output}"""
+
+    with write_lock: # 在写入文件时使用锁
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode='w',
+                encoding='utf-8',
+                delete=False,
+                dir=output_dir
+            ) as tmp_file:
+                tmp_file.write(content)
+                tmp_path = tmp_file.name
+            
+            os.rename(tmp_path, os.path.join(output_dir, filename))
+        except OSError as e:
+            log_error(ip, f"文件保存失败: {str(e)}")
 
 def batch_execute(
     devices: List[Dict[str, str]],
@@ -470,7 +522,7 @@ def batch_execute(
             initializer=thread_initializer
         ) as executor:
             futures = {executor.submit(execute_commands, dev, config_set): dev for dev in devices}
-            # **优化点 10: 确保 tqdm 进度条只在终端运行时显示**
+            # 确保 tqdm 进度条只在终端运行时显示
             progress = tqdm(total=len(devices), desc="执行进度", unit="台", disable=(not sys.stdout.isatty()))
 
             try:
@@ -484,7 +536,7 @@ def batch_execute(
                             )
                             success_count += 1
                     except Exception as e:
-                        # 错误已经在 execute_commands/log_error 中记录和打印
+                        # 错误已经在 log_error 中处理
                         pass 
                     finally:
                         progress.update(1)
@@ -498,28 +550,85 @@ def batch_execute(
         sys.exit(0)
 
 def list_supported_devices() -> None:
-    """显示所有支持的设备类型 (使用 print()，因为此时没有进度条干扰)"""
-    # ... (逻辑保持不变)
+    """显示所有支持的设备类型"""
     print(f"**支持的设备类型总数**: {len(SUPPORTED_DEVICE_TYPES)}\n")
-    # ... (打印逻辑)
+    
+    vendor_devices = {}
+    for device_type in sorted(SUPPORTED_DEVICE_TYPES):
+        vendor = get_device_vendor(device_type)
+        if vendor not in vendor_devices:
+            vendor_devices[vendor] = []
+        vendor_devices[vendor].append(device_type)
+    
+    for vendor, devices in sorted(vendor_devices.items()):
+        print(f"**{vendor.upper()}** ({len(devices)} 种):")
+        for device in sorted(devices):
+            print(f"  - {device}")
+        print()
 
 def parse_args() -> argparse.Namespace:
-    """命令行参数解析 (输出保持不变，使用 print/sys.exit)"""
-    # ... (帮助和版本信息逻辑保持不变)
+    """命令行参数解析"""
     parser = argparse.ArgumentParser(
         description="**网络设备批量管理工具 v5.0** - 支持所有netmiko设备",
         add_help=False,
         formatter_class=argparse.RawTextHelpFormatter
     )
-    # ... (添加参数逻辑保持不变)
-    
+    parser.add_argument('-i', '--input', help='设备清单Excel路径')
+    parser.add_argument('-t', '--threads', type=int, default=DEFAULT_THREADS, help=f'并发线程数 (默认: {DEFAULT_THREADS})')
+    parser.add_argument('-cs', '--config_set', action='store_true', help='使用配置模式发送命令')
+    parser.add_argument('-d', '--destination', default='./', help='结果保存路径')
+    parser.add_argument('--debug', action='store_true', help='启用调试日志')
+    parser.add_argument('-s', '--sheet', default='Sheet1', help='Excel工作表名称')
+    parser.add_argument('--list-devices', action='store_true', help='列出所有支持的设备类型')
+
     if '--version' in sys.argv or '-V' in sys.argv:
         print("Python", platform.python_version(), platform.platform())
         print("Netmiko", netmiko.__version__)
         sys.exit(0)
 
+    # 处理帮助信息 (保留用户要求的结构)
     if '--help' in sys.argv or '-h' in sys.argv:
-        # ... (帮助信息输出保持不变)
+        
+        help_text = f"""
+**网络设备批量管理工具 v5.0 - 全设备支持版本**
+
+**特性**:
+- **支持 {len(SUPPORTED_DEVICE_TYPES)} 种设备类型** (所有netmiko支持的设备)
+- **智能设备类型识别** (支持别名和模糊匹配)
+- **厂商特定优化配置** (针对不同厂商调优)
+- **自动重试机制** (连接失败自动重试)
+- **并发执行** (多线程提高效率)
+
+**使用方法**:
+  python net_cli_manager.py -i <设备清单.xlsx> [选项]
+
+**参数说明**:
+  -i, --input        必需  Excel文件路径  
+  -t, --threads      可选  并发线程数 (默认: {DEFAULT_THREADS})
+  -cs, --config_set  可选  使用配置模式
+  -d, --destination  可选  结果保存路径
+  -s, --sheet        可选  Excel工作表名
+  --debug            可选  启用详细日志
+  --list-devices     可选  显示支持的设备类型
+
+**Excel格式**:
+| host        | username | password | device_type  | secret | port | mult_command               |
+|-------------|----------|----------|--------------|--------|------|----------------------------|
+| 192.168.1.1 | admin    | pass123  | cisco_ios    | enable | 22   | show version;sh clock      |
+| 192.168.1.2 | admin    | pass123  | huawei       |        | 22   | disp version;disp clock    |
+| 192.168.1.3 | admin    | pass123  | paloalto     |        | 22   | show system info           |
+
+**示例**:
+  # 基本使用
+  python net_cli_manager.py -i devices.xlsx
+  
+  # 配置模式 + 调试
+  python net_cli_manager.py -i devices.xlsx -cs --debug
+  
+  # 查看支持的设备类型
+  python net_cli_manager.py --list-devices
+"""
+        print(help_text)
         sys.exit(0)
 
     return parser.parse_args()
@@ -547,7 +656,7 @@ def main() -> None:
             for device in devices:
                 device['debug'] = True
         
-        # 显示设备统计信息 (使用 print()，因为此时进度条还未启动)
+        # 显示设备统计信息
         device_stats = {}; vendor_stats = {}
         for device in devices:
             device_type = device['device_type']
