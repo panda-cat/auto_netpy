@@ -38,7 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller # 安装 PyInstaller
           # 如果你有 requirements.txt，也安装其他依赖
-          pip install -r requirements.txt
+          pip install -r src/requirements.txt
 
       - name: Build executable
         # 根据不同的操作系统定义输出文件名和 PyInstaller 选项
