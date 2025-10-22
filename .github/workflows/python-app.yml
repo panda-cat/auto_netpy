@@ -38,13 +38,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install pyinstaller # 安装 PyInstaller
           # 如果你有 requirements.txt，也安装其他依赖
-          # pip install -r requirements.txt
+          pip install -r requirements.txt
 
       - name: Build executable
         # 根据不同的操作系统定义输出文件名和 PyInstaller 选项
         run: |
-          APP_NAME="my_app" # 替换为你的应用名称
-          SCRIPT_PATH="your_script.py" # 替换为你的主脚本路径
+          APP_NAME="NCM" # 替换为你的应用名称
+          SCRIPT_PATH="src/auto_netops.py" # 替换为你的主脚本路径
           
           # 针对不同 OS 的文件扩展名和打包选项
           if [[ "${{ matrix.os }}" == "windows-latest" ]]; then
