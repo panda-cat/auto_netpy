@@ -1,6 +1,4 @@
-# requirements.txt
-nornir
-nornir-netmiko
-pyyaml
-argparse  # (虽然是内置库，但写上无妨)
-PyInstaller # 我们需要它来编译
+netmiko
+openpyxl
+tqdm
+paramiko==3.5.0
