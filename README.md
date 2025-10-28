@@ -1,6 +1,5 @@
-# 调整nornir默认超时(在defaults.yaml添加)
-connection_options:
-  netmiko:
-    extras:
-      timeout: 60 
-      session_timeout: 120
+#使用netmiko编编写程序
+1.支持多厂商
+2.并发执行命令
+3.命令发送模式，命令执行模式
+4.日志记录
