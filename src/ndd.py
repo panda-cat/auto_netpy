@@ -646,16 +646,12 @@ def save_result(ip: str, hostname: str, output: str, dest_path: str, device_type
     filename = f"{ip}_{sanitize_filename(hostname)}.txt"
     timestamp = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     
-    content = f"""=== 设备信息 ===
+    content = f"""
 
 IP地址: {ip}
 主机名: {sanitize_filename(hostname)}
-设备类型: {device_type}
-原始类型: {original_type}
-厂商: {vendor}
 执行时间: {timestamp}
 
-=== 执行结果 ===
 {output}"""
 
     try:
@@ -790,13 +786,13 @@ def parse_args() -> argparse.Namespace:
 
 **示例**:
   # 基本使用
-  python connexec.py -i devices.xlsx
+  python ndd.py -i devices.xlsx
   
   # 配置模式 + 调试
-  python connexec.py -i devices.xlsx -cs --debug
+  python ndd.py -i devices.xlsx -cs --debug
   
   # 查看支持的设备类型
-  python connexec.py --list-devices
+  python ndd.py --list-devices
 """)
         sys.exit(0)
 
