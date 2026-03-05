@@ -629,10 +629,10 @@ def execute_show_commands(conn: netmiko.BaseConnection, cmds: List[str], device_
                 # 标准命令发送
                 output = conn.send_command(cmd, cmd_verify=False, delay_factor=delay_factor)
             
-            outputs.append(f"Command: {cmd}\n{output}")
+            outputs.append(f"Send Command: {cmd}\n{output}")
             
         except Exception as e:
-            outputs.append(f"Command: {cmd}\nError: {str(e)}")
+            outputs.append(f"Send Command: {cmd}\nError: {str(e)}")
     
     return outputs
 
