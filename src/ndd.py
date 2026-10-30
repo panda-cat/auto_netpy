@@ -2,7 +2,6 @@ import argparse
 import os
 from pathlib import Path
 
-
 def process_files(input_dir, output_dir):
     # 使用 pathlib 自动转换并处理跨平台路径
     src_path = Path(input_dir)
