@@ -40,7 +40,7 @@ jobs:
         # 定义应用名称和主脚本路径，确保它们在所有平台中保持一致
         run: |
           echo "APP_NAME=Netdevices-MGT" >> $GITHUB_ENV       # 替换为你的应用名称 (例如：YourApp)
-          echo "SCRIPT_PATH=src/auto_netops.py" >> $GITHUB_ENV # 替换为你的主脚本路径
+          echo "SCRIPT_PATH=src/ndd.py" >> $GITHUB_ENV # 替换为你的主脚本路径
         shell: bash
 
       - name: Build executable
