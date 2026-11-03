@@ -1,4 +1,1 @@
-netmiko
-openpyxl
-tqdm
-paramiko==3.5.0
+requests
