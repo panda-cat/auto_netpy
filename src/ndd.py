@@ -1,73 +1,79 @@
-import argparse
+import json
 import os
-from pathlib import Path
+import re
+import requests
 
-def process_files(input_dir, output_dir):
-    # 使用 pathlib 自动转换并处理跨平台路径
-    src_path = Path(input_dir)
-    out_path = Path(output_dir)
 
-    # 如果输出文件夹不存在，则自动创建（parents=True 确保多级目录也能创建）
-    out_path.mkdir(parents=True, exist_ok=True)
+def fetch_json(url):
+    try:
+        response = requests.get(url)
+        response.raise_for_status()
+        return response.json()
+    except requests.RequestException as e:
+        print(f"Error fetching {url}: {str(e)}")
+        raise
 
-    success_count = 0
 
-    # 遍历源文件夹
-    for file_path in src_path.glob("*.txt"):
-        # 兼容一些系统下可能出现的同名大小写或隐藏文件问题
-        if file_path.is_dir():
-            continue
+def process_json_file(data, cdn_domain, asset_url):
+    """
+    处理目录数据并生成 aria2c 下载列表
+    将 cdn_domain 和 asset_url 作为参数传入，避免重复请求网络接口
+    """
+    http_links = []
+    for item in data.get('m_InternalIds', []):
+        if isinstance(item, str) and item.startswith('http://file.sg-arts.com'):
+            http_links.append(item)
 
-        out_file_path = out_path / file_path.name
+    new_prefix = f"{cdn_domain}/{asset_url}"
+    old_prefix = 'http://file.sg-arts.com/bundle/tkfm/development'
 
-        try:
-            extracted_lines = []
-            is_recording = False
+    processed_links = []
+    for link in http_links:
+        new_link = link.replace(old_prefix, new_prefix)
+        relative_path = link[len(old_prefix):]
 
-            # 使用 utf-8 编码，并忽略无法识别的字节（跨平台传输文件常有编码乱码问题）
-            with open(
-                file_path, "r", encoding="utf-8", errors="ignore"
-            ) as f:
-                for line in f:
-                    if "Command: dis cur" in line:
-                        is_recording = True
-                        continue
+        output = {
+            'url': new_link,
+            'out': f'download{relative_path}'
+        }
+        processed_links.append(output)
 
-                    if is_recording:
-                        extracted_lines.append(line)
-                        if "return" in line:
-                            break
+    # 写入到 txbm.txt 文件
+    with open('txbm.txt', 'w', encoding='utf-8') as out_file:
+        for item in processed_links:
+            out_file.write(f"{item['url']}\n  out={item['out']}\n")
 
-            if extracted_lines:
-                with open(out_file_path, "w", encoding="utf-8") as f:
-                    f.writelines(extracted_lines)
-                success_count += 1
-                print(f"成功提取: {file_path.name}")
-            else:
-                print(f"未找到匹配区间跳过: {file_path.name}")
+    print(f"已处理并保存 {len(processed_links)} 个链接到 txbm.txt")
+    
+    # 使用 shlex.quote 或双引号包裹带中文字符的路径，防止系统终端解析错误
+    os.system('aria2c -i txbm.txt -j 32 -s 16 -x 16 --check-certificate=false --dir="resdownload/天下布魔"')
 
-        except Exception as e:
-            print(f"处理失败 {file_path.name}: {e}")
 
-    print(f"\n批量提取完成！共成功处理 {success_count} 个文件。")
+def main():
+    try:
+        # 1. 获取基础 CDN 域名
+        cdn_info = fetch_json("https://cdn-aussetzen-tkfm.pinkcore.net/")
+        cdn_domain = cdn_info['cdn_domain']
+        
+        # 2. 获取最新构建版本号
+        version_info = fetch_json(f"{cdn_domain}/version/tkfm-version-1101.json")
+        latest_build_number = version_info['latest_build_number']
+        
+        # 3. 获取配置信息（包含资源路径和资源清单文件名）
+        config_info = fetch_json(f"{cdn_domain}/config/tkfm-config-1101-{latest_build_number}.json")
+        asset_url = config_info['asset_url']
+        catalog_name = config_info['catalog_name']
+        
+        # 4. 获取完整的 Android 资源清单 JSON
+        catalog_url = f"{cdn_domain}/{asset_url}/Android/{catalog_name}.json"
+        catalog_data = fetch_json(catalog_url)
+        
+        # 5. 开始解析并下载（传入已获取的 cdn_domain 和 asset_url）
+        process_json_file(catalog_data, cdn_domain, asset_url)
+
+    except Exception as e:
+        print(f"发生错误: {str(e)}")
 
 
 if __name__ == "__main__":
-    # 配置命令行参数解析
-    parser = argparse.ArgumentParser(
-        description="批量提取 TXT 文件中特定区间的文本内容（跨平台版）"
-    )
-    parser.add_argument(
-        "-i",
-        "--input",
-        required=True,
-        help="输入文件夹路径 (存放原始 TXT 文件)",
-    )
-    parser.add_argument(
-        "-o", "--output", required=True, help="输出文件夹路径"
-    )
-
-    args = parser.parse_args()
-
-    # 执行核心处理逻辑
-    process_files(args.input, args.output)
+    main()
