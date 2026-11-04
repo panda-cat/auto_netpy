@@ -14,9 +14,9 @@ from rich.progress import (
 )
 from rich.console import Console
 
-input_folder = sys.argv[1]
-mask_suffixes = ["_alpha", "_mask", "[alpha]"]  # 蒙版文件后缀，不区分大小写
-num_threads = multiprocessing.cpu_count()
+# 蒙版文件后缀，不区分大小写
+MASK_SUFFIXES = ["_alpha", "_mask", "[alpha]"]
+NUM_THREADS = multiprocessing.cpu_count()
 
 
 def normalize_filename(filename):
@@ -134,13 +134,11 @@ def get_alpha_channel(alpha_img):
 
 def find_alpha_file(base_name, all_files_dict):
     """在所有文件中查找对应的alpha文件"""
-
-    for suffix in mask_suffixes:
+    for suffix in MASK_SUFFIXES:
         potential_mask = f"{base_name}{suffix}.png"
         potential_mask_normalized = normalize_filename(potential_mask)
         if potential_mask_normalized in all_files_dict:
             return all_files_dict[potential_mask_normalized]
-
     return None
 
 
@@ -148,14 +146,10 @@ def merge_images(file_info, all_files_dict):
     """合并RGB图像和alpha通道图像"""
     full_path, file = file_info
 
-    if any(suffix.lower() in file.lower() for suffix in mask_suffixes):
-        return None
-
     if not file.lower().endswith(".png"):
         return None
 
     base_name = file[:-4]
-
     mask_file_path = find_alpha_file(base_name, all_files_dict)
     if not mask_file_path:
         return f"对于文件 '{file}' 未找到匹配的蒙版文件"
@@ -187,20 +181,34 @@ def merge_images(file_info, all_files_dict):
             ]
         )
 
-    cv2.imwrite(full_path, dst)
-    os.remove(mask_file_path)
-    return f"成功合并: {full_path}"
+    # 尝试写入，写入成功后再移除蒙版文件，防止异常丢失数据
+    if cv2.imwrite(full_path, dst):
+        try:
+            os.remove(mask_file_path)
+        except OSError as e:
+            return f"成功合并但移除蒙版失败: {full_path} (原因: {str(e)})"
+        return f"成功合并: {full_path}"
+    else:
+        return f"无法保存合并后的图像: {full_path}"
 
 
 def main():
     console = Console()
 
-    if not input_folder:
-        console.print("[red]请设置输入文件夹路径[/red]")
+    # 修复：防止没有传参时引发 sys.argv[1] IndexError 崩溃
+    if len(sys.argv) < 2:
+        console.print("[red]错误: 请设置输入文件夹路径！[/red]")
+        console.print("[yellow]用法: python merge_masks.py <文件夹路径>[/yellow]")
         return
 
-    all_files = []
-    all_files_dict = {}
+    input_folder = sys.argv[1]
+
+    if not os.path.exists(input_folder):
+        console.print(f"[red]错误: 路径不存在 '{input_folder}'[/red]")
+        return
+
+    target_images = []  # 存放待处理的原图
+    all_files_dict = {}  # 存放所有文件以供蒙版匹配
 
     with Progress(
         SpinnerColumn(),
@@ -214,22 +222,35 @@ def main():
         for root, _, files in os.walk(input_folder):
             for file in files:
                 full_path = os.path.join(root, file)
-                all_files.append((full_path, file))
+                file_lower = file.lower()
+                
+                # 记录所有文件以便查找
                 all_files_dict[normalize_filename(file)] = full_path
+
+                # 优化：如果在扫描时发现是蒙版文件，则不加入待处理队列
+                if any(suffix.lower() in file_lower for suffix in MASK_SUFFIXES):
+                    continue
+
+                if file_lower.endswith(".png"):
+                    target_images.append((full_path, file))
 
         progress.update(
             scan_task,
             completed=True,
-            description=f"[green]找到 {len(all_files)} 个文件",
+            description=f"[green]扫描完成，找到 {len(target_images)} 个待合并目标[/green]",
         )
 
-        merge_task = progress.add_task("[cyan]处理文件...", total=len(all_files))
+        if not target_images:
+            console.print("[yellow]未找到需要合并的 PNG 原图文件。[/yellow]")
+            return
+
+        merge_task = progress.add_task("[cyan]处理文件...", total=len(target_images))
         results = []
 
-        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        with ThreadPoolExecutor(max_workers=NUM_THREADS) as executor:
             future_to_file = {
                 executor.submit(merge_images, file_info, all_files_dict): file_info[1]
-                for file_info in all_files
+                for file_info in target_images
             }
 
             for future in as_completed(future_to_file):
@@ -239,7 +260,7 @@ def main():
                     if result:
                         results.append(result)
                 except Exception as e:
-                    results.append(f"[red]处理 {filename} 时发生错误: {str(e)}[/red]")
+                    results.append(f"[red]处理 {filename} 时发生严重错误: {str(e)}[/red]")
                 progress.update(merge_task, advance=1)
 
     console.print("\n[bold]处理完成[/bold]")
@@ -249,9 +270,8 @@ def main():
 
     console.print(f"[green]成功处理: {success_count} 个文件[/green]")
     if error_count > 0:
-        console.print(f"[yellow]处理失败: {error_count} 个文件[/yellow]")
-
-        console.print("\n[yellow]错误详情:[/yellow]")
+        console.print(f"[yellow]忽略或失败: {error_count} 个项目[/yellow]")
+        console.print("\n[yellow]详情日志:[/yellow]")
         for result in results:
             if result and not result.startswith("成功合并"):
                 console.print(result)
