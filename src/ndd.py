@@ -1,78 +1,260 @@
-import json
+import cv2
 import os
-import re
-import requests
+import sys
+import numpy as np
+import multiprocessing
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from rich.progress import (
+    Progress,
+    SpinnerColumn,
+    TimeElapsedColumn,
+    TextColumn,
+    BarColumn,
+    TaskProgressColumn,
+)
+from rich.console import Console
+
+input_folder = sys.argv[1]
+mask_suffixes = ["_alpha", "_mask", "[alpha]"]  # 蒙版文件后缀，不区分大小写
+num_threads = multiprocessing.cpu_count()
 
 
-def fetch_json(url):
-    try:
-        response = requests.get(url)
-        response.raise_for_status()
-        return response.json()
-    except requests.RequestException as e:
-        print(f"Error fetching {url}: {str(e)}")
-        raise
+def normalize_filename(filename):
+    """标准化文件名以便于匹配"""
+    return filename.lower().replace("[", "_").replace("]", "_")
 
 
-def process_json_file(data, cdn_domain, asset_url):
-    """
-    处理目录数据并生成 aria2c 下载列表
-    将 cdn_domain 和 asset_url 作为参数传入，避免重复请求网络接口
-    """
-    http_links = []
-    for item in data.get('m_InternalIds', []):
-        if isinstance(item, str) and item.startswith('http://file.sg-arts.com'):
-            http_links.append(item)
+def analyze_image(img):
+    """分析图片特征"""
+    if img is None or len(img.shape) < 2:
+        return None
 
-    new_prefix = f"{cdn_domain}/{asset_url}"
-    old_prefix = 'http://file.sg-arts.com/bundle/tkfm/development'
+    channels = img.shape[2] if len(img.shape) > 2 else 1
+    info = {
+        "shape": img.shape,
+        "channels": channels,
+    }
 
-    processed_links = []
-    for link in http_links:
-        new_link = link.replace(old_prefix, new_prefix)
-        relative_path = link[len(old_prefix):]
+    channel_names = (
+        ["B", "G", "R", "A"]
+        if channels == 4
+        else (["B", "G", "R"] if channels == 3 else ["Gray"])
+    )
 
-        output = {
-            'url': new_link,
-            'out': f'download{relative_path}'
+    for i in range(channels):
+        channel = img[:, :, i] if channels > 1 else img
+        name = channel_names[i]
+        info[f"{name}_stats"] = {
+            "min": int(np.min(channel)),
+            "max": int(np.max(channel)),
+            "mean": float(np.mean(channel)),
+            "unique_values": len(np.unique(channel)),
         }
-        processed_links.append(output)
 
-    # 写入到 txbm.txt 文件
-    with open('txbm.txt', 'w', encoding='utf-8') as out_file:
-        for item in processed_links:
-            out_file.write(f"{item['url']}\n  out={item['out']}\n")
+    return info
 
-    print(f"已处理并保存 {len(processed_links)} 个链接到 txbm.txt")
-    
-    # 使用 shlex.quote 或双引号包裹带中文字符的路径，防止系统终端解析错误
-    os.system('aria2c -i txbm.txt -j 32 -s 16 -x 16 --check-certificate=false --dir="resdownload/天下布魔"')
+
+def determine_alpha_type(alpha_img):
+    """
+    判断alpha图片的类型
+    返回: 'arknights', 'gfl', 'rgb_mask' 或 None
+    """
+    if alpha_img is None:
+        return None
+
+    info = analyze_image(alpha_img)
+    if info is None:
+        return None
+
+    # 如果是 4 通道图像
+    if info["channels"] == 4:
+        # 少女前线类型特征：RGB通道全255，A通道有变化
+        if (
+            info["B_stats"]["min"] == 255
+            and info["B_stats"]["max"] == 255
+            and info["G_stats"]["min"] == 255
+            and info["G_stats"]["max"] == 255
+            and info["R_stats"]["min"] == 255
+            and info["R_stats"]["max"] == 255
+            and info["A_stats"]["unique_values"] > 1
+        ):
+            return "gfl"
+
+        # 明日方舟类型特征：RGB通道有变化，A通道接近全不透明
+        elif (
+            info["B_stats"]["unique_values"] > 1
+            and info["G_stats"]["unique_values"] > 1
+            and info["R_stats"]["unique_values"] > 1
+            and info["A_stats"]["min"] >= 254
+        ):
+            return "arknights"
+
+    # 白鲸回廊类型特征：3 通道图像
+    elif info["channels"] == 3:
+        return "rgb_mask"
+
+    return None
+
+
+def get_alpha_channel(alpha_img):
+    """提取alpha通道"""
+    if alpha_img is None:
+        return None, "没有 Alpha 图片"
+
+    alpha_type = determine_alpha_type(alpha_img)
+    debug_info = {"type": alpha_type, "shape": alpha_img.shape}
+
+    try:
+        if alpha_type == "gfl":
+            # 直接使用A通道
+            alpha = alpha_img[:, :, 3]
+            debug_info["method"] = "direct_alpha"
+            return alpha, debug_info
+
+        elif alpha_type == "arknights":
+            # 直接使用RGB通道（转灰度）
+            alpha = cv2.cvtColor(alpha_img[:, :, :3], cv2.COLOR_BGR2GRAY)
+            debug_info["method"] = "rgb_to_gray"
+            return alpha, debug_info
+
+        elif alpha_type == "rgb_mask":
+            # 通道蒙版，直接转灰度
+            if len(alpha_img.shape) == 3:
+                alpha = cv2.cvtColor(alpha_img, cv2.COLOR_BGR2GRAY)
+            else:
+                alpha = alpha_img
+            debug_info["method"] = "3ch_to_gray"
+            return alpha, debug_info
+
+        return None, f"Unknown alpha image type. Stats: {analyze_image(alpha_img)}"
+
+    except Exception as e:
+        return None, f"Error processing alpha: {str(e)}, Debug info: {debug_info}"
+
+
+def find_alpha_file(base_name, all_files_dict):
+    """在所有文件中查找对应的alpha文件"""
+
+    for suffix in mask_suffixes:
+        potential_mask = f"{base_name}{suffix}.png"
+        potential_mask_normalized = normalize_filename(potential_mask)
+        if potential_mask_normalized in all_files_dict:
+            return all_files_dict[potential_mask_normalized]
+
+    return None
+
+
+def merge_images(file_info, all_files_dict):
+    """合并RGB图像和alpha通道图像"""
+    full_path, file = file_info
+
+    if any(suffix.lower() in file.lower() for suffix in mask_suffixes):
+        return None
+
+    if not file.lower().endswith(".png"):
+        return None
+
+    base_name = file[:-4]
+
+    mask_file_path = find_alpha_file(base_name, all_files_dict)
+    if not mask_file_path:
+        return f"对于文件 '{file}' 未找到匹配的蒙版文件"
+
+    src = cv2.imread(full_path, cv2.IMREAD_UNCHANGED)
+    alpha_img = cv2.imread(mask_file_path, cv2.IMREAD_UNCHANGED)
+
+    if src is None:
+        return f"无法读取源图像: {file}"
+    if alpha_img is None:
+        return f"无法读取蒙版图像: {os.path.basename(mask_file_path)}"
+
+    alpha_channel, debug_info = get_alpha_channel(alpha_img)
+    if alpha_channel is None:
+        return f"无法从文件 '{os.path.basename(mask_file_path)}' 提取alpha通道: {debug_info}"
+
+    h, w = src.shape[:2]
+    alpha_resized = cv2.resize(alpha_channel, (w, h), interpolation=cv2.INTER_CUBIC)
+
+    if len(src.shape) == 2:
+        dst = cv2.merge([src, alpha_resized])
+    else:
+        dst = cv2.merge(
+            [
+                src[:, :, 0],  # B
+                src[:, :, 1],  # G
+                src[:, :, 2],  # R
+                alpha_resized,  # A
+            ]
+        )
+
+    cv2.imwrite(full_path, dst)
+    os.remove(mask_file_path)
+    return f"成功合并: {full_path}"
 
 
 def main():
-    try:
-        # 1. 获取基础 CDN 域名
-        cdn_info = fetch_json("https://cdn-aussetzen-tkfm.pinkcore.net/")
-        cdn_domain = cdn_info['cdn_domain']
-        
-        # 2. 获取最新构建版本号
-        version_info = fetch_json(f"{cdn_domain}/version/tkfm-version-1101.json")
-        latest_build_number = version_info['latest_build_number']
-        
-        # 3. 获取配置信息（包含资源路径和资源清单文件名）
-        config_info = fetch_json(f"{cdn_domain}/config/tkfm-config-1101-{latest_build_number}.json")
-        asset_url = config_info['asset_url']
-        catalog_name = config_info['catalog_name']
-        
-        # 4. 获取完整的 Android 资源清单 JSON
-        catalog_url = f"{cdn_domain}/{asset_url}/Android/{catalog_name}.json"
-        catalog_data = fetch_json(catalog_url)
-        
-        # 5. 开始解析并下载（传入已获取的 cdn_domain 和 asset_url）
-        process_json_file(catalog_data, cdn_domain, asset_url)
+    console = Console()
 
-    except Exception as e:
-        print(f"发生错误: {str(e)}")
+    if not input_folder:
+        console.print("[red]请设置输入文件夹路径[/red]")
+        return
+
+    all_files = []
+    all_files_dict = {}
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeElapsedColumn(),
+    ) as progress:
+        scan_task = progress.add_task("[cyan]扫描文件...", total=None)
+
+        for root, _, files in os.walk(input_folder):
+            for file in files:
+                full_path = os.path.join(root, file)
+                all_files.append((full_path, file))
+                all_files_dict[normalize_filename(file)] = full_path
+
+        progress.update(
+            scan_task,
+            completed=True,
+            description=f"[green]找到 {len(all_files)} 个文件",
+        )
+
+        merge_task = progress.add_task("[cyan]处理文件...", total=len(all_files))
+        results = []
+
+        with ThreadPoolExecutor(max_workers=num_threads) as executor:
+            future_to_file = {
+                executor.submit(merge_images, file_info, all_files_dict): file_info[1]
+                for file_info in all_files
+            }
+
+            for future in as_completed(future_to_file):
+                filename = future_to_file[future]
+                try:
+                    result = future.result()
+                    if result:
+                        results.append(result)
+                except Exception as e:
+                    results.append(f"[red]处理 {filename} 时发生错误: {str(e)}[/red]")
+                progress.update(merge_task, advance=1)
+
+    console.print("\n[bold]处理完成[/bold]")
+
+    success_count = sum(1 for r in results if r and r.startswith("成功合并"))
+    error_count = sum(1 for r in results if r and not r.startswith("成功合并"))
+
+    console.print(f"[green]成功处理: {success_count} 个文件[/green]")
+    if error_count > 0:
+        console.print(f"[yellow]处理失败: {error_count} 个文件[/yellow]")
+
+        console.print("\n[yellow]错误详情:[/yellow]")
+        for result in results:
+            if result and not result.startswith("成功合并"):
+                console.print(result)
 
 
 if __name__ == "__main__":
